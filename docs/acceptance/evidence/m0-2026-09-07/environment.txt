@@ -1,7 +1,8 @@
 HIBIKI M0 acceptance environment
 date_local=2026-09-07 (UTC+8)
-git_head=2e3b0b18e044ab0c11d162f44f89b2aaeb6eabe8
-working_tree=DIRTY — P0/P1 fixes uncommitted (see working-tree-status.txt)
+freeze_commit=94ddf91cad5cf3c355963e7c0939b59cd3d45167
+parent_commit=2e3b0b18e044ab0c11d162f44f89b2aaeb6eabe8
+working_tree_at_freeze=clean (implementation + evidence co-committed in freeze_commit)
 source_tree_sha256=2230442C46D5E5E9D843EB64630F1F03B538E3BEB3025CB18E352B5B4C6C07F6
 os=Windows-11-10.0.26200-SP0
 cpu=Intel(R) Core(TM) i5-14400F

@@ -1,7 +1,3 @@
- M src/hibiki/application/bootstrap.py
- M src/hibiki/application/service.py
- M src/hibiki/domain/guards.py
- M src/hibiki/domain/transitions.py
- M src/hibiki/persistence/session.py
-?? docs/acceptance/
-?? tests/application/test_m0_review_regressions.py
+Freeze commit: 94ddf91cad5cf3c355963e7c0939b59cd3d45167
+Parent: 2e3b0b18e044ab0c11d162f44f89b2aaeb6eabe8
+Note: this file originally captured the pre-commit dirty status used during the measured run; the freeze object above is the committed tree that includes those changes.
