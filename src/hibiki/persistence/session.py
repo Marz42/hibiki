@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 T = TypeVar("T")
@@ -63,33 +64,54 @@ class SerialSessionExecutor:
 
 
 class InstanceLock:
-    """Single Core instance lock via SQLite-backed lock file semantics."""
+    """Process-lifetime exclusive file lock for a single Core data directory."""
 
-    def __init__(self, engine: Engine) -> None:
-        self._engine = engine
-        self._conn = None
+    def __init__(self, data_dir: Path, *, holder: str = "core") -> None:
+        self._path = Path(data_dir) / "core.lock"
+        self._holder = holder
+        self._fh = None
 
     def acquire(self) -> None:
-        # Hold a reserved connection with BEGIN IMMEDIATE on a lock table row.
-        from sqlalchemy import text
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = open(self._path, "a+", encoding="utf-8")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
 
-        self._conn = self._engine.connect()
-        self._conn.execute(text("BEGIN IMMEDIATE"))
-        self._conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS core_instance_lock ("
-                "id INTEGER PRIMARY KEY CHECK (id = 1), holder TEXT NOT NULL)"
-            )
-        )
-        row = self._conn.execute(text("SELECT holder FROM core_instance_lock WHERE id=1")).fetchone()
-        if row is None:
-            self._conn.execute(
-                text("INSERT INTO core_instance_lock (id, holder) VALUES (1, 'core')")
-            )
-        self._conn.execute(text("UPDATE core_instance_lock SET holder='core' WHERE id=1"))
-        self._conn.commit()
+                self._fh.seek(0)
+                if self._fh.read(1) == "":
+                    self._fh.write("0")
+                    self._fh.flush()
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            self._fh.close()
+            self._fh = None
+            raise RuntimeError(
+                f"another Core instance holds the lock on {self._path}"
+            ) from exc
+        self._fh.seek(0)
+        self._fh.truncate()
+        self._fh.write(self._holder)
+        self._fh.flush()
 
     def release(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        if self._fh is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._fh.close()
+            self._fh = None

@@ -8,6 +8,7 @@ from hibiki.domain.types import AuthContext
 HUMAN_ONLY_OPS = frozenset(
     {
         "approve_contract",
+        "approve_side_effect",
         "resolve_decision",
         "accept_result",
         "resume_task",
@@ -15,6 +16,15 @@ HUMAN_ONLY_OPS = frozenset(
 )
 
 INTERRUPT_OPS = frozenset({"pause_task", "cancel_task"})
+
+HUMAN_DECISION_KINDS = frozenset(
+    {
+        DecisionKind.CONTRACT_APPROVAL,
+        DecisionKind.CONTRACT_DELTA,
+        DecisionKind.SIDE_EFFECT_APPROVAL,
+        DecisionKind.FINAL_ACCEPTANCE,
+    }
+)
 
 
 def require_human(auth: AuthContext, operation: str) -> None:
@@ -40,6 +50,13 @@ def guard_operation(auth: AuthContext, operation: str) -> None:
         require_human(auth, operation)
     elif operation in INTERRUPT_OPS:
         require_interrupt_scope(auth, operation)
+
+
+def guard_human_decision(auth: AuthContext, kind: DecisionKind | str) -> None:
+    """Formal Decision kinds always require Human, regardless of command alias."""
+    k = DecisionKind(kind) if not isinstance(kind, DecisionKind) else kind
+    if k in HUMAN_DECISION_KINDS:
+        require_human(auth, f"decision:{k}")
 
 
 def guard_dispatch(
@@ -82,9 +99,4 @@ def guard_final_complete(*, task_state: TaskState, has_acceptance: bool) -> None
 
 
 def guard_decision_kind_human(kind: DecisionKind) -> bool:
-    return kind in {
-        DecisionKind.CONTRACT_APPROVAL,
-        DecisionKind.CONTRACT_DELTA,
-        DecisionKind.SIDE_EFFECT_APPROVAL,
-        DecisionKind.FINAL_ACCEPTANCE,
-    }
+    return kind in HUMAN_DECISION_KINDS

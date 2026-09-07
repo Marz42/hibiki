@@ -1,0 +1,68 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- D:\Repos\hibiki\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: D:\Repos\hibiki
+configfile: pyproject.toml
+plugins: anyio-4.15.1, hypothesis-6.167.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 55 items
+
+tests/application/test_m0_acceptance.py::test_h001_no_active_contract_no_dispatch PASSED [  1%]
+tests/application/test_m0_acceptance.py::test_h002_user_agent_cannot_approve PASSED [  3%]
+tests/application/test_m0_acceptance.py::test_h002_internal_cannot_approve PASSED [  5%]
+tests/application/test_m0_acceptance.py::test_h003_stale_approval_rejected PASSED [  7%]
+tests/application/test_m0_acceptance.py::test_h004_duplicate_decision_idempotent PASSED [  9%]
+tests/application/test_m0_acceptance.py::test_h005_idempotency_conflict PASSED [ 10%]
+tests/application/test_m0_acceptance.py::test_h006_cancel_invalidates_pending_start PASSED [ 12%]
+tests/application/test_m0_acceptance.py::test_h007_gate_freezes_dispatch PASSED [ 14%]
+tests/application/test_m0_acceptance.py::test_h008_pause_resume_with_pending_gate PASSED [ 16%]
+tests/application/test_m0_acceptance.py::test_h009_crash_before_commit_no_partial PASSED [ 18%]
+tests/application/test_m0_acceptance.py::test_h009_crash_after_commit_scan_recovers PASSED [ 20%]
+tests/application/test_m0_acceptance.py::test_h010_late_result_does_not_overwrite PASSED [ 21%]
+tests/application/test_m0_acceptance.py::test_h011_stale_planner_generation PASSED [ 23%]
+tests/application/test_m0_acceptance.py::test_h012_profile_version_frozen_on_run PASSED [ 25%]
+tests/application/test_m0_acceptance.py::test_h013_verify_fail_blocks_verdict_pass_dep PASSED [ 27%]
+tests/application/test_m0_acceptance.py::test_h014_plan_authorization_change_needs_delta PASSED [ 29%]
+tests/application/test_m0_acceptance.py::test_h015_unrelated_plan_bump_keeps_valid_result PASSED [ 30%]
+tests/application/test_m0_acceptance.py::test_h016_upstream_hash_change_invalidates_pass PASSED [ 32%]
+tests/application/test_m0_acceptance.py::test_h017_no_completed_without_acceptance PASSED [ 34%]
+tests/application/test_m0_acceptance.py::test_h018_budget_gate PASSED    [ 36%]
+tests/application/test_m0_acceptance.py::test_h019_lease_expired_writer_alive_quarantine PASSED [ 38%]
+tests/application/test_m0_acceptance.py::test_h020_reconcile_keeps_paused_waiting PASSED [ 40%]
+tests/application/test_m0_acceptance.py::test_h021_event_sequence_monotonic_ignores_producer_clock PASSED [ 41%]
+tests/application/test_m0_acceptance.py::test_h044_no_dispatch_without_approval PASSED [ 43%]
+tests/application/test_m0_acceptance.py::test_h045_param_change_invalidates_old_approval PASSED [ 45%]
+tests/application/test_m0_acceptance.py::test_h046_dispatch_crash_leaves_identity PASSED [ 47%]
+tests/application/test_m0_acceptance.py::test_h047_idempotent_reconcile_single_effect PASSED [ 49%]
+tests/application/test_m0_acceptance.py::test_h048_non_idempotent_unknown_no_auto_redispatch PASSED [ 50%]
+tests/application/test_m0_acceptance.py::test_h049_same_logical_action_reuses_effect PASSED [ 52%]
+tests/application/test_m0_acceptance.py::test_h050_cancel_after_dispatch_keeps_uncertainty PASSED [ 54%]
+tests/application/test_m0_review_regressions.py::test_p0_user_agent_cannot_approve_side_effect PASSED [ 56%]
+tests/application/test_m0_review_regressions.py::test_p0_unknown_exception_does_not_blind_replay PASSED [ 58%]
+tests/application/test_m0_review_regressions.py::test_p0_cancel_blocks_unsent_side_effect PASSED [ 60%]
+tests/application/test_m0_review_regressions.py::test_p1_acceptance_rejects_empty_and_stale_snapshot PASSED [ 61%]
+tests/application/test_m0_review_regressions.py::test_p1_completed_cannot_pause PASSED [ 63%]
+tests/application/test_m0_review_regressions.py::test_p1_quiescent_refuses_live_writer PASSED [ 65%]
+tests/application/test_m0_review_regressions.py::test_p1_pause_resume_clears_markers PASSED [ 67%]
+tests/application/test_m0_review_regressions.py::test_p1_gate_resolve_restores_dispatch PASSED [ 69%]
+tests/application/test_m0_review_regressions.py::test_p1_plan_rejects_cross_task_work_unit PASSED [ 70%]
+tests/application/test_m0_review_regressions.py::test_p1_plan_binds_spec_version PASSED [ 72%]
+tests/application/test_m0_review_regressions.py::test_p1_instance_lock_mutex PASSED [ 74%]
+tests/application/test_m0_review_regressions.py::test_p1_outbox_inflight_recovery PASSED [ 76%]
+tests/application/test_m0_review_regressions.py::test_p1_inbox_dedup_same_message_id PASSED [ 78%]
+tests/application/test_m0_review_regressions.py::test_p1_concurrency_limits PASSED [ 80%]
+tests/application/test_m0_review_regressions.py::test_p1_contract_resource_limit_synced PASSED [ 81%]
+tests/domain/test_transitions.py::test_task_transition_happy_path PASSED [ 83%]
+tests/domain/test_transitions.py::test_illegal_task_transition PASSED    [ 85%]
+tests/domain/test_transitions.py::test_run_terminal_irreversible PASSED  [ 87%]
+tests/domain/test_transitions.py::test_guard_dispatch_requires_contract PASSED [ 89%]
+tests/domain/test_transitions.py::test_dag_cycle_rejected PASSED         [ 90%]
+tests/persistence/test_sqlite.py::test_engine_pragmas PASSED             [ 92%]
+tests/property/test_random_schedule.py::test_100_fixed_seeds PASSED      [ 94%]
+tests/recovery/test_recovery.py::test_migrate_from_empty_dir PASSED      [ 96%]
+tests/recovery/test_recovery.py::test_refuse_start_without_schema PASSED [ 98%]
+tests/recovery/test_recovery.py::test_reconcile_after_restart PASSED     [100%]
+
+- generated xml file: D:\Repos\hibiki\docs\acceptance\evidence\m0-2026-09-07\junit.xml -
+============================= 55 passed in 17.24s =============================

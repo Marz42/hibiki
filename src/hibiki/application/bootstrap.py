@@ -48,7 +48,7 @@ def bootstrap_core(
         run_migrations(db_url)
     engine = create_sqlite_engine(db_url)
     ensure_schema_version(engine, "m0")
-    lock = InstanceLock(engine)
+    lock = InstanceLock(data_dir)
     if acquire_lock:
         lock.acquire()
     sf = make_session_factory(engine)

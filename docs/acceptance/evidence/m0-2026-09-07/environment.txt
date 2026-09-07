@@ -1,0 +1,24 @@
+HIBIKI M0 acceptance environment
+date_local=2026-09-07 (UTC+8)
+git_head=2e3b0b18e044ab0c11d162f44f89b2aaeb6eabe8
+working_tree=DIRTY — P0/P1 fixes uncommitted (see working-tree-status.txt)
+source_tree_sha256=2230442C46D5E5E9D843EB64630F1F03B538E3BEB3025CB18E352B5B4C6C07F6
+os=Windows-11-10.0.26200-SP0
+cpu=Intel(R) Core(TM) i5-14400F
+logical_cpus=16
+ram_gib=31.8
+python=3.12.13 (uv .venv)
+sqlite=3.50.4 (stdlib bundled with CPython)
+sqlalchemy=2.0.52
+alembic=1.19.2
+pydantic=2.13.5
+hibiki=0.1.0
+uv_lock_sha256=4A59AC044FA3B5D327D1DD964012AE452B9822CF8E1F8EB5C86D31C244BC02A4
+adapters=FakeAgentAdapter, FakeClock, FakeExternalAdapter
+profiles=fake (in-test)
+model=none (no LLM)
+network=offline intent; suite uses Fake adapters only
+db_size=ephemeral per-test tmp_path SQLite
+test_data_version=in-repo tests/ as fingerprinted by source-tree.sha256
+command=uv run pytest tests/ -vv --tb=short --junitxml=docs/acceptance/evidence/m0-2026-09-07/junit.xml
+result=55 passed in 17.24s

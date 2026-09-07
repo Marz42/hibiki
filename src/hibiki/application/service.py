@@ -33,12 +33,17 @@ from hibiki.domain.errors import (
     NotFoundError,
     PreconditionError,
 )
-from hibiki.domain.guards import guard_dispatch, guard_operation
+from hibiki.domain.guards import (
+    guard_dispatch,
+    guard_human_decision,
+    guard_operation,
+)
 from hibiki.domain.hashing import canonical_json, content_hash, payload_hash
 from hibiki.domain.plan import PlanEdge, PlanNode, validate_dag
 from hibiki.domain.ports import AgentAdapter, Clock, ExternalAdapter
 from hibiki.domain.transitions import (
     is_terminal_run,
+    is_terminal_task,
     transition_run,
     transition_side_effect,
     transition_task,
@@ -58,6 +63,7 @@ from hibiki.persistence.models import (
     ExplanationRow,
     GateRow,
     IdempotencyRow,
+    InboxRow,
     OutboxRow,
     PlannerSessionRow,
     PlanRow,
@@ -151,12 +157,50 @@ class ApplicationService:
 
         def _recon(session: Session) -> dict[str, Any]:
             notes: list[str] = []
+            now = self.clock.now()
+            # Recover expired IN_FLIGHT outbox without blind side-effect replay
+            for row in session.scalars(
+                select(OutboxRow).where(OutboxRow.status == OutboxStatus.IN_FLIGHT)
+            ).all():
+                leased = row.leased_until
+                if leased is not None and as_utc_naive(leased) > now:
+                    continue
+                if row.command_type == "side_effect.dispatch":
+                    payload = json.loads(row.payload_json)
+                    effect = session.get(SideEffectRow, payload.get("effect_id"))
+                    if effect and effect.state in {
+                        SideEffectState.DISPATCHING,
+                        SideEffectState.UNKNOWN,
+                    }:
+                        effect.state = SideEffectState.UNKNOWN
+                        effect.last_error = effect.last_error or "outbox_inflight_timeout"
+                        task = session.get(TaskRow, effect.task_id)
+                        if task and not is_terminal_task(TaskState(task.state)):
+                            if TaskState(task.state) != TaskState.WAITING_HUMAN:
+                                self._set_task_state(
+                                    session,
+                                    task,
+                                    "blocking_gate.opened",
+                                    reason=WaitingReason.EXECUTION_UNCERTAIN,
+                                )
+                    row.status = OutboxStatus.ACKED
+                    row.acked_at = now
+                    notes.append(f"outbox_unknown:{row.outbox_id}")
+                elif row.command_type == "agent.start":
+                    # start(run_id) is idempotent — safe to reclaim
+                    row.status = OutboxStatus.PENDING
+                    row.leased_until = None
+                    notes.append(f"outbox_reclaim_start:{row.outbox_id}")
+                else:
+                    row.status = OutboxStatus.PENDING
+                    row.leased_until = None
+                    notes.append(f"outbox_reclaim:{row.outbox_id}")
+
             tasks = session.scalars(select(TaskRow)).all()
             for task in tasks:
                 if task.state in {TaskState.PAUSED, TaskState.WAITING_HUMAN, TaskState.CANCELLING}:
                     notes.append(f"keep:{task.task_id}:{task.state}")
                     continue
-                # Mark CREATED runs for re-check
                 runs = session.scalars(
                     select(AgentRunRow).where(
                         AgentRunRow.task_id == task.task_id,
@@ -171,6 +215,7 @@ class ApplicationService:
                         run.status = AgentRunStatus.LOST
                         run.terminal_reason = "process_missing"
                         run.finished_at = self.clock.now()
+                        self._clear_run_occupancy(session, run)
                         self._append_event(
                             session,
                             task.task_id,
@@ -186,7 +231,6 @@ class ApplicationService:
                             and as_utc_naive(lease) < self.clock.now()
                             and insp.get("alive")
                         ):
-                            # Lease expired but writer alive -> quarantine workspace
                             if run.workspace_id:
                                 ws = session.get(WorkspaceRow, run.workspace_id)
                                 if ws:
@@ -211,12 +255,20 @@ class ApplicationService:
         ph: str,
     ) -> CommandResult:
         task_id = str(payload.get("task_id") or "")
+        # §12.2 Inbox: actor_id + message_id dedup (separate from business idempotency)
+        inbox_hit = self._check_inbox(session, auth, message_id, ph)
+        if inbox_hit is not None:
+            return inbox_hit
+
         # create_task idempotency must not depend on generated task_id
         idem_task_id = "" if operation == "create_task" else task_id
         replay = self._check_idempotency(
             session, auth, idem_task_id, operation, idempotency_key, ph, message_id
         )
         if replay is not None:
+            self._store_inbox(
+                session, auth, task_id or "", operation, message_id, idempotency_key, ph, replay
+            )
             return replay
 
         handlers = {
@@ -265,15 +317,79 @@ class ApplicationService:
             message_id,
             result,
         )
+        self._store_inbox(
+            session, auth, store_task_id, operation, message_id, idempotency_key, ph, result
+        )
         if result.ok:
             self._wake_requested = True
             self.executor.on_after_commit(lambda: None)
         return result
 
     # ------------------------------------------------------------------
-    # Idempotency
+    # Idempotency + Inbox
     # ------------------------------------------------------------------
 
+    def _check_inbox(
+        self,
+        session: Session,
+        auth: AuthContext,
+        message_id: str,
+        ph: str,
+    ) -> CommandResult | None:
+        row = session.scalars(
+            select(InboxRow).where(
+                InboxRow.actor_id == auth.actor_id,
+                InboxRow.message_id == message_id,
+            )
+        ).first()
+        if row is None:
+            return None
+        if row.payload_hash != ph:
+            raise IdempotencyConflictError(
+                "same message_id with different payload",
+                code="inbox_conflict",
+            )
+        data = json.loads(row.result_json)
+        return CommandResult.success(data, replayed=True)
+
+    def _store_inbox(
+        self,
+        session: Session,
+        auth: AuthContext,
+        task_id: str,
+        operation: str,
+        message_id: str,
+        idempotency_key: str,
+        ph: str,
+        result: CommandResult,
+    ) -> None:
+        existing = session.scalars(
+            select(InboxRow).where(
+                InboxRow.actor_id == auth.actor_id,
+                InboxRow.message_id == message_id,
+            )
+        ).first()
+        if existing is not None:
+            return
+        session.add(
+            InboxRow(
+                actor_id=auth.actor_id,
+                message_id=message_id,
+                principal_id=auth.principal_id,
+                task_id=task_id or None,
+                operation_type=operation,
+                # Inbox uniqueness is message-scoped; do not reuse business ikey here
+                # (business idempotency lives in idempotency_keys).
+                idempotency_key=message_id,
+                payload_hash=ph,
+                result_json=canonical_json(result.data if result.ok else {
+                    "ok": False,
+                    "error_code": result.error_code,
+                    "error_message": result.error_message,
+                }),
+                created_at=self.clock.now(),
+            )
+        )
     def _check_idempotency(
         self,
         session: Session,
@@ -375,18 +491,69 @@ class ApplicationService:
         event: str,
         *,
         reason: str | None = None,
-        force_state: TaskState | None = None,
     ) -> None:
-        if force_state is not None:
-            new_state = force_state
-        else:
-            new_state = transition_task(TaskState(task.state), event)
+        # Never bypass the transition table — terminal states cannot reopen.
+        new_state = transition_task(TaskState(task.state), event)
         task.state = new_state
         task.state_reason = reason
         task.state_revision += 1
         task.updated_at = self.clock.now()
 
+    def _recompute_runnable_state(self, session: Session, task: TaskRow) -> None:
+        """After a gate resolves, leave WAITING_HUMAN only if other gates remain."""
+        session.flush()
+        if TaskState(task.state) != TaskState.WAITING_HUMAN:
+            return
+        if self._has_blocking_gate(session, task.task_id):
+            return
+        if task.cancel_intent or is_terminal_task(TaskState(task.state)):
+            return
+        self._set_task_state(session, task, "decision.resolved")
+
+    def _clear_run_occupancy(self, session: Session, run: AgentRunRow) -> None:
+        if run.work_unit_id:
+            marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
+            if marker and marker.run_id == run.run_id:
+                session.delete(marker)
+            wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+            if wu and wu.active_run_id == run.run_id:
+                wu.active_run_id = None
+        if run.workspace_id:
+            ws = session.get(WorkspaceRow, run.workspace_id)
+            if ws and ws.owner_run_id == run.run_id:
+                ws.writer_alive = False
+                if ws.state != WorkspaceState.QUARANTINED:
+                    ws.state = WorkspaceState.READY
+                    ws.owner_run_id = None
+
+    def _count_active_runs(
+        self, session: Session, *, task_id: str | None = None
+    ) -> int:
+        q = select(func.count()).select_from(AgentRunRow).where(
+            AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING])
+        )
+        if task_id:
+            q = q.where(AgentRunRow.task_id == task_id)
+        return int(session.scalar(q) or 0)
+
+    def _supersede_pending_acceptance(self, session: Session, task_id: str) -> None:
+        now = self.clock.now()
+        for dec in session.scalars(
+            select(DecisionRow).where(
+                DecisionRow.task_id == task_id,
+                DecisionRow.decision_kind == DecisionKind.FINAL_ACCEPTANCE,
+                DecisionRow.status == DecisionStatus.PENDING,
+            )
+        ):
+            dec.status = DecisionStatus.SUPERSEDED
+            for gate in session.scalars(
+                select(GateRow).where(GateRow.decision_id == dec.decision_id)
+            ):
+                gate.lifecycle = GateLifecycle.RESOLVED
+                gate.resolved_at = now
+
     def _has_blocking_gate(self, session: Session, task_id: str) -> bool:
+        session.flush()
         gates = session.scalars(
             select(GateRow).where(
                 GateRow.task_id == task_id,
@@ -577,7 +744,6 @@ class ApplicationService:
             task,
             "contract.submitted",
             reason=WaitingReason.CONTRACT_APPROVAL,
-            force_state=TaskState.WAITING_HUMAN,
         )
         self._append_event(
             session,
@@ -618,6 +784,15 @@ class ApplicationService:
         decision = session.get(DecisionRow, payload["decision_id"])
         if decision is None:
             raise NotFoundError("decision not found", code="decision_not_found")
+
+        # Formal Decision kinds always require Human (alias-proof)
+        guard_human_decision(auth, decision.decision_kind)
+
+        task = self._get_task(session, decision.task_id)
+        if task.principal_id != auth.principal_id:
+            raise AuthorizationError(
+                "decision principal mismatch", code="authorization_denied"
+            )
 
         # Idempotent replay of same decision
         if decision.status in {DecisionStatus.APPROVED, DecisionStatus.REJECTED}:
@@ -667,8 +842,6 @@ class ApplicationService:
         decision.decided_by_principal = auth.principal_id
         decision.decided_at = now
 
-        task = self._get_task(session, decision.task_id)
-
         if choice == "APPROVE":
             decision.status = DecisionStatus.APPROVED
             self._apply_approved_decision(session, task, decision)
@@ -679,6 +852,7 @@ class ApplicationService:
             ):
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
+            self._recompute_runnable_state(session, task)
 
         self._append_event(
             session,
@@ -740,18 +914,46 @@ class ApplicationService:
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
             decision.gate_lifecycle = GateLifecycle.RESOLVED
-            # Simple tasks go EXECUTING via minimal plan later; start PLANNING
+            # Sync Contract resource_limits into scheduling budget
+            limits = json.loads(contract.content_json).get("resource_limits") or {}
+            if "model_call_limit" in limits:
+                task.model_call_limit = int(limits["model_call_limit"])
             simple = bool(json.loads(contract.content_json).get("simple", True))
             self._set_task_state(
                 session,
                 task,
-                "contract.approved",
-                force_state=TaskState.EXECUTING if simple else TaskState.PLANNING,
+                "contract.approved_simple" if simple else "contract.approved",
             )
         elif kind == DecisionKind.FINAL_ACCEPTANCE:
             snap = session.get(ResultSnapshotRow, decision.result_snapshot_ref)
             if snap is None or snap.content_hash != decision.target_hash:
                 raise ConflictError("result snapshot mismatch", code="target_hash_conflict")
+            # Snapshot must still match current Contract/Plan
+            if snap.contract_version != task.contract_version:
+                raise ConflictError(
+                    "acceptance snapshot contract stale", code="snapshot_stale"
+                )
+            if snap.plan_version != task.plan_version:
+                raise ConflictError(
+                    "acceptance snapshot plan stale", code="snapshot_stale"
+                )
+            pending_wu = session.scalars(
+                select(WorkUnitExecutionRow).where(
+                    WorkUnitExecutionRow.task_id == task.task_id,
+                    WorkUnitExecutionRow.status.in_(
+                        [
+                            WorkUnitStatus.PENDING,
+                            WorkUnitStatus.RUNNING,
+                            WorkUnitStatus.BLOCKED,
+                        ]
+                    ),
+                )
+            ).all()
+            if pending_wu:
+                raise PreconditionError(
+                    "incomplete work units block acceptance",
+                    code="incomplete_work",
+                )
             # no active runs
             active = session.scalars(
                 select(AgentRunRow).where(
@@ -778,9 +980,7 @@ class ApplicationService:
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
             task.final_result_refs = decision.result_snapshot_ref
-            self._set_task_state(
-                session, task, "final.accepted", force_state=TaskState.COMPLETED
-            )
+            self._set_task_state(session, task, "final.accepted")
         elif kind == DecisionKind.SIDE_EFFECT_APPROVAL:
             effect = session.get(SideEffectRow, decision.target_ref)
             if effect is None:
@@ -802,18 +1002,14 @@ class ApplicationService:
             ):
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
-            if not self._has_blocking_gate(session, task.task_id):
-                if task.state == TaskState.WAITING_HUMAN:
-                    self._set_task_state(
-                        session, task, "decision.resolved", force_state=TaskState.EXECUTING
-                    )
+            self._recompute_runnable_state(session, task)
         else:
             for gate in session.scalars(
                 select(GateRow).where(GateRow.decision_id == decision.decision_id)
             ):
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
-
+            self._recompute_runnable_state(session, task)
     def _activate_minimal_plan(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
@@ -904,8 +1100,26 @@ class ApplicationService:
         )
         session.add(ActivePlanMarker(task_id=task.task_id, plan_version=plan_version))
         task.plan_version = plan_version
+        # Plan change invalidates pending final-acceptance snapshots
+        self._supersede_pending_acceptance(session, task.task_id)
 
         for n in nodes:
+            # Task isolation: reject Work Units owned by another Task
+            any_spec = session.scalars(
+                select(WorkUnitSpecRow).where(WorkUnitSpecRow.work_unit_id == n.work_unit_id)
+            ).first()
+            if any_spec is not None and any_spec.task_id != task.task_id:
+                raise PreconditionError(
+                    f"work unit {n.work_unit_id} belongs to another task",
+                    code="cross_task_work_unit",
+                )
+            exec_existing = session.get(WorkUnitExecutionRow, n.work_unit_id)
+            if exec_existing is not None and exec_existing.task_id != task.task_id:
+                raise PreconditionError(
+                    f"work unit execution {n.work_unit_id} belongs to another task",
+                    code="cross_task_work_unit",
+                )
+
             spec = {
                 "objective": payload.get("objective") or task.title,
                 "work_type": n.work_type,
@@ -937,8 +1151,12 @@ class ApplicationService:
                         created_at=now,
                     )
                 )
-            exec_row = session.get(WorkUnitExecutionRow, n.work_unit_id)
-            if exec_row is None:
+            elif existing.task_id != task.task_id:
+                raise PreconditionError(
+                    "work unit spec task mismatch", code="cross_task_work_unit"
+                )
+
+            if exec_existing is None:
                 session.add(
                     WorkUnitExecutionRow(
                         work_unit_id=n.work_unit_id,
@@ -947,8 +1165,23 @@ class ApplicationService:
                         status=WorkUnitStatus.PENDING,
                     )
                 )
+            else:
+                # Bind execution to the Plan node's fixed Spec version
+                if exec_existing.spec_version != n.spec_version:
+                    if exec_existing.status == WorkUnitStatus.DONE:
+                        # Spec change: create new pending cycle is not automatic reuse
+                        exec_existing.status = WorkUnitStatus.PENDING
+                        exec_existing.selected_result_ref = None
+                        exec_existing.selected_verdict = None
+                        exec_existing.verified_artifact_hash = None
+                    exec_existing.spec_version = n.spec_version
+                if exec_existing.status == WorkUnitStatus.CANCELLED:
+                    exec_existing.status = WorkUnitStatus.PENDING
+                    exec_existing.blocked_reason = None
+
             ws_id = f"ws_{n.work_unit_id}"
-            if session.get(WorkspaceRow, ws_id) is None:
+            ws = session.get(WorkspaceRow, ws_id)
+            if ws is None:
                 session.add(
                     WorkspaceRow(
                         workspace_id=ws_id,
@@ -958,16 +1191,14 @@ class ApplicationService:
                         fencing_epoch=0,
                     )
                 )
+            elif ws.task_id != task.task_id:
+                raise PreconditionError(
+                    "workspace belongs to another task", code="cross_task_workspace"
+                )
 
-        if task.state == TaskState.PLANNING:
-            self._set_task_state(session, task, "plan.activated", force_state=TaskState.EXECUTING)
-        elif task.state not in {
-            TaskState.EXECUTING,
-            TaskState.VERIFYING,
-            TaskState.PLANNING,
-        }:
-            # keep if already executing
-            pass
+        if task.state in {TaskState.PLANNING, TaskState.EXECUTING, TaskState.VERIFYING}:
+            if task.state != TaskState.EXECUTING:
+                self._set_task_state(session, task, "plan.activated")
 
         self._append_event(
             session,
@@ -1017,12 +1248,27 @@ class ApplicationService:
         nodes = json.loads(plan.nodes_json)
         edges = json.loads(plan.edges_json)
         created: list[str] = []
+        node_by_id = {n["work_unit_id"]: n for n in nodes}
+
+        global_active = self._count_active_runs(session)
+        task_active = self._count_active_runs(session, task_id=task.task_id)
 
         for node in nodes:
+            if global_active >= DEFAULTS.global_run_concurrency:
+                break
+            if task_active >= DEFAULTS.per_task_run_concurrency:
+                break
+
             wu_id = node["work_unit_id"]
+            plan_spec_version = int(node.get("spec_version") or 1)
             wu = session.get(WorkUnitExecutionRow, wu_id)
             if wu is None or wu.status != WorkUnitStatus.PENDING:
                 continue
+            if wu.task_id != task.task_id:
+                continue
+            # Bind to Plan's fixed Spec version
+            if wu.spec_version != plan_spec_version:
+                wu.spec_version = plan_spec_version
             if wu.next_retry_at and as_utc_naive(wu.next_retry_at) > self.clock.now():
                 continue
             if not self._deps_satisfied(session, wu_id, edges):
@@ -1032,8 +1278,19 @@ class ApplicationService:
             if ws and ws.state == WorkspaceState.QUARANTINED:
                 continue
             if ws and ws.writer_alive and ws.owner_run_id:
-                # cannot assign second writer
                 continue
+            # stale marker without active run must not block forever — but also
+            # must not allow double writers; clear orphan markers for non-active runs
+            marker = session.get(ActiveExecuteRunMarker, wu_id)
+            if marker is not None:
+                marked_run = session.get(AgentRunRow, marker.run_id)
+                if marked_run is None or marked_run.status not in {
+                    AgentRunStatus.CREATED,
+                    AgentRunStatus.RUNNING,
+                }:
+                    session.delete(marker)
+                else:
+                    continue
 
             run_id = new_id("run")
             now = self.clock.now()
@@ -1074,7 +1331,7 @@ class ApplicationService:
                 task_id=task.task_id,
                 assignment_kind=AssignmentKind.EXECUTE,
                 work_unit_id=wu_id,
-                work_unit_spec_version=wu.spec_version,
+                work_unit_spec_version=plan_spec_version,
                 attempt_no=attempt,
                 profile_id="fake",
                 profile_version=profile_version,
@@ -1093,6 +1350,7 @@ class ApplicationService:
             wu.status = transition_work_unit(WorkUnitStatus(wu.status), "run.started")
             wu.active_run_id = run_id
             wu.attempt_count = attempt
+            wu.spec_version = plan_spec_version
             if ws:
                 ws.state = WorkspaceState.LOCKED
                 ws.owner_run_id = run_id
@@ -1127,7 +1385,10 @@ class ApplicationService:
                 payload={"run_id": run_id, "work_unit_id": wu_id},
             )
             created.append(run_id)
+            global_active += 1
+            task_active += 1
 
+        _ = node_by_id
         return CommandResult.success({"task_id": task.task_id, "created_runs": created})
 
     def _deps_satisfied(
@@ -1253,17 +1514,9 @@ class ApplicationService:
         if task.state == TaskState.CANCELLING:
             raise PreconditionError("cannot pause while cancelling", code="cancelling")
         task.pause_intent = True
-        self._set_task_state(session, task, "pause.requested", force_state=TaskState.PAUSING)
-        self._invalidate_pending_starts(session, task)
+        self._set_task_state(session, task, "pause.requested")
+        self._invalidate_pending_outbox(session, task)
         self._enqueue_stops(session, task, reason="pause")
-        # block running work units
-        for wu in session.scalars(
-            select(WorkUnitExecutionRow).where(
-                WorkUnitExecutionRow.task_id == task.task_id,
-                WorkUnitExecutionRow.status == WorkUnitStatus.RUNNING,
-            )
-        ):
-            pass  # wait for stop/quiescent
         self._append_event(
             session, task.task_id, "pause.requested", auth_actor=auth.actor_id, payload={}
         )
@@ -1275,6 +1528,24 @@ class ApplicationService:
         task = self._get_task(session, payload["task_id"])
         if task.state != TaskState.PAUSING:
             raise PreconditionError("not pausing", code="invalid_state")
+        # Refuse PAUSED while any writer is still alive
+        for run in session.scalars(
+            select(AgentRunRow).where(
+                AgentRunRow.task_id == task.task_id,
+                AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING]),
+            )
+        ):
+            insp = self.agent_adapter.inspect(run.run_id)
+            if insp.get("alive") or insp.get("writer_alive"):
+                if run.workspace_id:
+                    ws = session.get(WorkspaceRow, run.workspace_id)
+                    if ws:
+                        ws.state = WorkspaceState.QUARANTINED
+                        ws.writer_alive = True
+                raise PreconditionError(
+                    "writer still alive; cannot mark PAUSED",
+                    code="writer_alive",
+                )
         for wu in session.scalars(
             select(WorkUnitExecutionRow).where(
                 WorkUnitExecutionRow.task_id == task.task_id,
@@ -1290,14 +1561,12 @@ class ApplicationService:
                 AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING]),
             )
         ):
-            if run.status == AgentRunStatus.CREATED:
-                run.status = AgentRunStatus.CANCELLED
-            else:
-                run.status = AgentRunStatus.CANCELLED
+            run.status = AgentRunStatus.CANCELLED
             run.finished_at = self.clock.now()
             run.terminal_reason = "paused"
+            self._clear_run_occupancy(session, run)
         task.pause_intent = False
-        self._set_task_state(session, task, "runtime.quiescent", force_state=TaskState.PAUSED)
+        self._set_task_state(session, task, "runtime.quiescent")
         self._append_event(
             session, task.task_id, "task.paused", auth_actor=auth.actor_id, payload={}
         )
@@ -1314,14 +1583,10 @@ class ApplicationService:
                 session,
                 task,
                 "resume.requested",
-                force_state=TaskState.WAITING_HUMAN,
                 reason=task.state_reason or WaitingReason.CONTRACT_APPROVAL,
             )
         else:
-            self._set_task_state(
-                session, task, "resume.requested", force_state=TaskState.EXECUTING
-            )
-            # unblock paused work units
+            self._set_task_state(session, task, "resume.requested_runnable")
             for wu in session.scalars(
                 select(WorkUnitExecutionRow).where(
                     WorkUnitExecutionRow.task_id == task.task_id,
@@ -1342,8 +1607,8 @@ class ApplicationService:
         task = self._get_task(session, payload["task_id"])
         task.cancel_intent = True
         task.revoke_epoch += 1
-        self._set_task_state(session, task, "cancel.requested", force_state=TaskState.CANCELLING)
-        self._invalidate_pending_starts(session, task)
+        self._set_task_state(session, task, "cancel.requested")
+        self._invalidate_pending_outbox(session, task)
         # cancel pending approvals not yet dispatched
         for effect in session.scalars(
             select(SideEffectRow).where(
@@ -1353,11 +1618,29 @@ class ApplicationService:
                         SideEffectState.PROPOSED,
                         SideEffectState.WAITING_APPROVAL,
                         SideEffectState.AUTHORIZED,
+                        SideEffectState.DISPATCHING,
                     ]
                 ),
             )
         ):
-            effect.state = SideEffectState.CANCELLED
+            # DISPATCHING with unsent outbox is cancelled; already-sent stays UNKNOWN via invalidate
+            if effect.state == SideEffectState.DISPATCHING:
+                pending = session.scalars(
+                    select(OutboxRow).where(
+                        OutboxRow.task_id == task.task_id,
+                        OutboxRow.command_type == "side_effect.dispatch",
+                        OutboxRow.status == OutboxStatus.PENDING,
+                    )
+                ).all()
+                still_pending = any(
+                    json.loads(ob.payload_json).get("effect_id") == effect.effect_id
+                    for ob in pending
+                )
+                if still_pending:
+                    effect.state = SideEffectState.CANCELLED
+                # else leave DISPATCHING for invalidate/reconcile → UNKNOWN
+            else:
+                effect.state = SideEffectState.CANCELLED
         for wu in session.scalars(
             select(WorkUnitExecutionRow).where(
                 WorkUnitExecutionRow.task_id == task.task_id,
@@ -1404,24 +1687,38 @@ class ApplicationService:
             run.status = AgentRunStatus.CANCELLED
             run.finished_at = self.clock.now()
         self._set_task_state(
-            session, task, "cancellation.settled", force_state=TaskState.ABORTED
-        )
+            session, task, "cancellation.settled")
         self._append_event(
             session, task.task_id, "task.aborted", auth_actor=auth.actor_id, payload={}
         )
         return CommandResult.success({"task_id": task.task_id, "state": task.state})
 
-    def _invalidate_pending_starts(self, session: Session, task: TaskRow) -> None:
+    def _invalidate_pending_outbox(self, session: Session, task: TaskRow) -> None:
+        """Revoke unsent starts and unsent external dispatches on pause/cancel."""
         for ob in session.scalars(
             select(OutboxRow).where(
                 OutboxRow.task_id == task.task_id,
-                OutboxRow.status == OutboxStatus.PENDING,
-                OutboxRow.command_type == "agent.start",
+                OutboxRow.status.in_([OutboxStatus.PENDING, OutboxStatus.IN_FLIGHT]),
+                OutboxRow.command_type.in_(["agent.start", "side_effect.dispatch"]),
             )
         ):
+            # IN_FLIGHT side effects may already be sent — leave for reconcile as UNKNOWN
+            if (
+                ob.status == OutboxStatus.IN_FLIGHT
+                and ob.command_type == "side_effect.dispatch"
+            ):
+                payload = json.loads(ob.payload_json)
+                effect = session.get(SideEffectRow, payload.get("effect_id"))
+                if effect and effect.state == SideEffectState.DISPATCHING:
+                    effect.state = SideEffectState.UNKNOWN
+                ob.status = OutboxStatus.ACKED
+                ob.acked_at = self.clock.now()
+                continue
             ob.status = OutboxStatus.DEAD
             ob.revoke_epoch = task.revoke_epoch
 
+    def _invalidate_pending_starts(self, session: Session, task: TaskRow) -> None:
+        self._invalidate_pending_outbox(session, task)
     def _enqueue_stops(self, session: Session, task: TaskRow, *, reason: str) -> None:
         now = self.clock.now()
         for run in session.scalars(
@@ -1459,11 +1756,70 @@ class ApplicationService:
         ).all()
         if unknown:
             raise PreconditionError("UNKNOWN side effects", code="unknown_side_effect")
+
+        # All current-plan work units must be DONE
+        plan_marker = session.get(ActivePlanMarker, task.task_id)
+        if plan_marker is None:
+            raise PreconditionError("no active plan", code="no_active_plan")
+        plan = session.scalars(
+            select(PlanRow).where(
+                PlanRow.task_id == task.task_id,
+                PlanRow.plan_version == plan_marker.plan_version,
+            )
+        ).one()
+        nodes = json.loads(plan.nodes_json)
+        deliverables = []
+        evidence = []
+        for node in nodes:
+            wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
+            if wu is None or wu.status != WorkUnitStatus.DONE:
+                raise PreconditionError(
+                    f"work unit {node['work_unit_id']} not DONE",
+                    code="incomplete_work",
+                )
+            if not wu.selected_result_ref:
+                raise PreconditionError(
+                    f"work unit {node['work_unit_id']} missing result",
+                    code="missing_evidence",
+                )
+            deliverables.append(
+                {
+                    "work_unit_id": wu.work_unit_id,
+                    "result_ref": wu.selected_result_ref,
+                    "verdict": wu.selected_verdict,
+                }
+            )
+            evidence.append(
+                {
+                    "work_unit_id": wu.work_unit_id,
+                    "result_ref": wu.selected_result_ref,
+                    "artifact_hash": wu.verified_artifact_hash,
+                }
+            )
+
+        content = json.loads(contract.content_json)
+        required = [
+            c
+            for c in (content.get("acceptance_criteria") or [])
+            if c.get("required", True)
+        ]
+        if required and not evidence:
+            raise PreconditionError(
+                "required acceptance criteria lack evidence",
+                code="missing_evidence",
+            )
+        # Caller may supply extra evidence, but Core requires non-empty mapped evidence
+        extra_evidence = payload.get("evidence") or []
+        if extra_evidence:
+            evidence.extend(extra_evidence)
+
+        self._supersede_pending_acceptance(session, task.task_id)
+
         snap_content = {
             "contract_version": contract.contract_version,
             "plan_version": task.plan_version,
-            "deliverables": payload.get("deliverables") or [],
-            "evidence": payload.get("evidence") or [],
+            "deliverables": deliverables,
+            "evidence": evidence,
             "open_items": payload.get("open_items") or [],
         }
         sh = content_hash(snap_content)
@@ -1507,13 +1863,23 @@ class ApplicationService:
                 created_at=now,
             )
         )
-        self._set_task_state(
-            session,
-            task,
-            "acceptance.ready",
-            force_state=TaskState.WAITING_HUMAN,
-            reason=WaitingReason.FINAL_ACCEPTANCE,
-        )
+        if TaskState(task.state) in {
+            TaskState.EXECUTING,
+            TaskState.VERIFYING,
+            TaskState.PLANNING,
+        }:
+            self._set_task_state(
+                session,
+                task,
+                "acceptance.ready",
+                reason=WaitingReason.FINAL_ACCEPTANCE,
+            )
+        elif TaskState(task.state) != TaskState.WAITING_HUMAN:
+            raise PreconditionError(
+                f"cannot prepare acceptance from {task.state}", code="invalid_state"
+            )
+        else:
+            task.state_reason = WaitingReason.FINAL_ACCEPTANCE
         return CommandResult.success(
             {
                 "task_id": task.task_id,
@@ -1550,17 +1916,6 @@ class ApplicationService:
                 SideEffectRow.logical_action_key == logical_key,
             )
         ).first()
-        if existing is not None:
-            return CommandResult.success(
-                {
-                    "effect_id": existing.effect_id,
-                    "state": existing.state,
-                    "reused": True,
-                    "task_id": task.task_id,
-                },
-                replayed=True,
-            )
-
         params = payload.get("parameters") or {}
         target_ref = payload["target_ref"]
         action_type = payload.get("action_type") or "external.write"
@@ -1568,6 +1923,22 @@ class ApplicationService:
         digest = content_hash(
             {"action_type": action_type, "target_ref": target_ref, "parameters": params}
         )
+        if existing is not None:
+            if existing.action_digest != digest:
+                raise ConflictError(
+                    "logical_action_key exists with different parameters/target",
+                    code="side_effect_digest_conflict",
+                )
+            return CommandResult.success(
+                {
+                    "effect_id": existing.effect_id,
+                    "state": existing.state,
+                    "reused": True,
+                    "task_id": task.task_id,
+                    "action_digest": existing.action_digest,
+                },
+                replayed=True,
+            )
         effect_id = new_id("eff")
         now = self.clock.now()
         preauthorized = logical_key in (
@@ -1629,7 +2000,6 @@ class ApplicationService:
                 session,
                 task,
                 "blocking_gate.opened",
-                force_state=TaskState.WAITING_HUMAN,
                 reason=WaitingReason.SIDE_EFFECT_APPROVAL,
             )
         self._append_event(
@@ -1733,7 +2103,6 @@ class ApplicationService:
                     session,
                     task,
                     "blocking_gate.opened",
-                    force_state=TaskState.WAITING_HUMAN,
                     reason=WaitingReason.EXECUTION_UNCERTAIN,
                 )
             return CommandResult.success(
@@ -1811,7 +2180,6 @@ class ApplicationService:
             session,
             task,
             "blocking_gate.opened",
-            force_state=TaskState.WAITING_HUMAN,
             reason=reason,
         )
         return CommandResult.success(
@@ -1849,7 +2217,6 @@ class ApplicationService:
             session,
             task,
             "blocking_gate.opened",
-            force_state=TaskState.WAITING_HUMAN,
             reason=WaitingReason.RESOURCE_LIMIT,
         )
 
@@ -1968,8 +2335,10 @@ class ApplicationService:
                 auth_actor=auth.actor_id,
                 payload={"got": gen, "expected": ps.generation},
             )
-            raise PreconditionError(
-                "stale planner generation", code="stale_generation"
+            return CommandResult.failure(
+                "stale_generation",
+                "stale planner generation",
+                data={"got": gen, "expected": ps.generation, "task_id": task.task_id},
             )
         # Check if proposal tries to change authorization fields
         if payload.get("changes_authorization"):
@@ -2004,7 +2373,6 @@ class ApplicationService:
                 session,
                 task,
                 "blocking_gate.opened",
-                force_state=TaskState.WAITING_HUMAN,
                 reason=WaitingReason.CONTRACT_DELTA,
             )
             return CommandResult.success(
@@ -2028,6 +2396,24 @@ class ApplicationService:
         ).first()
         if row is None:
             return None
+        # Honor backoff lease on PENDING rows (agent.start retry)
+        if row.leased_until is not None and as_utc_naive(row.leased_until) > self.clock.now():
+            # Look for another claimable row
+            rows = session.scalars(
+                select(OutboxRow)
+                .where(OutboxRow.status == OutboxStatus.PENDING)
+                .order_by(OutboxRow.created_at)
+            ).all()
+            row = None
+            for candidate in rows:
+                if (
+                    candidate.leased_until is None
+                    or as_utc_naive(candidate.leased_until) <= self.clock.now()
+                ):
+                    row = candidate
+                    break
+            if row is None:
+                return None
         task = session.get(TaskRow, row.task_id)
         if task and row.command_type == "agent.start":
             if row.revoke_epoch < task.revoke_epoch or task.cancel_intent or task.pause_intent:
@@ -2040,6 +2426,28 @@ class ApplicationService:
             }:
                 row.status = OutboxStatus.DEAD
                 return None
+        if task and row.command_type == "side_effect.dispatch":
+            payload = json.loads(row.payload_json)
+            effect = session.get(SideEffectRow, payload.get("effect_id"))
+            if (
+                task.cancel_intent
+                or row.revoke_epoch < task.revoke_epoch
+                or effect is None
+                or effect.state
+                not in {SideEffectState.DISPATCHING, SideEffectState.AUTHORIZED}
+            ):
+                row.status = OutboxStatus.DEAD
+                if effect and effect.state == SideEffectState.AUTHORIZED:
+                    # cancelled before send
+                    if task.cancel_intent:
+                        effect.state = SideEffectState.CANCELLED
+                return None
+            # Re-validate authorization window before claiming send
+            if effect.expires_at and as_utc_naive(effect.expires_at) < self.clock.now():
+                row.status = OutboxStatus.DEAD
+                return None
+            if effect.state == SideEffectState.AUTHORIZED:
+                effect.state = SideEffectState.DISPATCHING
         row.status = OutboxStatus.IN_FLIGHT
         row.leased_until = self.clock.now() + timedelta(seconds=30)
         return {
@@ -2070,6 +2478,37 @@ class ApplicationService:
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
             self.executor.run(lambda s: self._fail_outbox(s, item["outbox_id"], err))
+
+    def _fail_outbox(self, session: Session, outbox_id: str, error: str) -> None:
+        row = session.get(OutboxRow, outbox_id)
+        if row is None:
+            return
+        if row.command_type == "side_effect.dispatch":
+            # UNKNOWN must not return to PENDING — no blind replay
+            payload = json.loads(row.payload_json)
+            effect = session.get(SideEffectRow, payload["effect_id"])
+            if effect and effect.state in {
+                SideEffectState.DISPATCHING,
+                SideEffectState.AUTHORIZED,
+            }:
+                effect.state = SideEffectState.UNKNOWN
+                effect.last_error = error
+                task = session.get(TaskRow, effect.task_id)
+                if task and not is_terminal_task(TaskState(task.state)):
+                    if TaskState(task.state) != TaskState.WAITING_HUMAN:
+                        self._set_task_state(
+                            session,
+                            task,
+                            "blocking_gate.opened",
+                            reason=WaitingReason.EXECUTION_UNCERTAIN,
+                        )
+            row.status = OutboxStatus.ACKED
+            row.acked_at = self.clock.now()
+            return
+        # agent.start: bounded backoff via DEAD after repeated fails — keep PENDING
+        # with future lease so drain doesn't tight-loop
+        row.status = OutboxStatus.PENDING
+        row.leased_until = self.clock.now() + timedelta(seconds=DEFAULTS.retry_backoff_seconds[0])
 
     def _ack_outbox_and_mark_running(
         self, session: Session, outbox_id: str, payload: dict[str, Any]
@@ -2111,28 +2550,48 @@ class ApplicationService:
             row.status = OutboxStatus.DEAD if dead else OutboxStatus.ACKED
             row.acked_at = self.clock.now()
 
-    def _fail_outbox(self, session: Session, outbox_id: str, error: str) -> None:
-        row = session.get(OutboxRow, outbox_id)
-        if row:
-            row.status = OutboxStatus.PENDING  # retry later for start; side effects handled separately
-            if row.command_type == "side_effect.dispatch":
-                payload = json.loads(row.payload_json)
-                effect = session.get(SideEffectRow, payload["effect_id"])
-                if effect and effect.state == SideEffectState.DISPATCHING:
-                    effect.state = SideEffectState.UNKNOWN
-                    effect.last_error = error
-
     def _do_external_dispatch(self, item: dict[str, Any]) -> None:
         payload = item["payload"]
-        receipt = self.external_adapter.dispatch(
-            {
-                "effect_id": payload["effect_id"],
-                "external_idempotency_key": payload["external_idempotency_key"],
-                "parameters": payload.get("parameters"),
-                "target_ref": payload.get("target_ref"),
-                "action_type": payload.get("action_type"),
-            }
-        )
+
+        # Final pre-send gate: cancel / revoke / non-DISPATCHING must not call adapter
+        def _precheck(session: Session) -> bool:
+            row = session.get(OutboxRow, item["outbox_id"])
+            effect = session.get(SideEffectRow, payload["effect_id"])
+            task = session.get(TaskRow, item["task_id"]) if item.get("task_id") else None
+            if row is None or effect is None:
+                return False
+            if task is None:
+                task = session.get(TaskRow, effect.task_id)
+            if (
+                task is None
+                or task.cancel_intent
+                or effect.state != SideEffectState.DISPATCHING
+                or row.status == OutboxStatus.DEAD
+            ):
+                if row:
+                    row.status = OutboxStatus.DEAD
+                if effect and effect.state == SideEffectState.DISPATCHING and task and task.cancel_intent:
+                    # Unsent cancel path — only if we never called adapter
+                    effect.state = SideEffectState.CANCELLED
+                return False
+            return True
+
+        if not self.executor.run(_precheck):
+            return
+
+        try:
+            receipt = self.external_adapter.dispatch(
+                {
+                    "effect_id": payload["effect_id"],
+                    "external_idempotency_key": payload["external_idempotency_key"],
+                    "parameters": payload.get("parameters"),
+                    "target_ref": payload.get("target_ref"),
+                    "action_type": payload.get("action_type"),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.executor.run(lambda s: self._fail_outbox(s, item["outbox_id"], str(exc)))
+            return
 
         def _apply(session: Session) -> None:
             effect = session.get(SideEffectRow, payload["effect_id"])
@@ -2153,18 +2612,14 @@ class ApplicationService:
             else:
                 effect.state = SideEffectState.UNKNOWN
                 task = session.get(TaskRow, effect.task_id)
-                if task and task.state not in {
-                    TaskState.CANCELLING,
-                    TaskState.ABORTED,
-                    TaskState.COMPLETED,
-                }:
-                    self._set_task_state(
-                        session,
-                        task,
-                        "blocking_gate.opened",
-                        force_state=TaskState.WAITING_HUMAN,
-                        reason=WaitingReason.EXECUTION_UNCERTAIN,
-                    )
+                if task and not is_terminal_task(TaskState(task.state)):
+                    if TaskState(task.state) != TaskState.WAITING_HUMAN:
+                        self._set_task_state(
+                            session,
+                            task,
+                            "blocking_gate.opened",
+                            reason=WaitingReason.EXECUTION_UNCERTAIN,
+                        )
 
         self.executor.run(_apply)
 
@@ -2301,5 +2756,11 @@ class ApplicationService:
             if task_id:
                 q = q.where(OutboxRow.task_id == task_id)
             return int(session.scalar(q) or 0)
+
+        return self.executor.run(_read)
+
+    def count_inbox(self) -> int:
+        def _read(session: Session) -> int:
+            return int(session.scalar(select(func.count()).select_from(InboxRow)) or 0)
 
         return self.executor.run(_read)

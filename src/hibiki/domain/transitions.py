@@ -7,16 +7,24 @@ from hibiki.domain.errors import InvalidTransitionError
 TASK_TRANSITIONS: dict[tuple[TaskState, str], TaskState] = {
     (TaskState.NEW, "clarification"): TaskState.WAITING_HUMAN,
     (TaskState.NEW, "contract.submitted"): TaskState.WAITING_HUMAN,
-    (TaskState.WAITING_HUMAN, "contract.approved"): TaskState.PLANNING,  # or EXECUTING via apply
+    (TaskState.WAITING_HUMAN, "contract.submitted"): TaskState.WAITING_HUMAN,
+    (TaskState.WAITING_HUMAN, "contract.approved"): TaskState.PLANNING,
+    (TaskState.WAITING_HUMAN, "contract.approved_simple"): TaskState.EXECUTING,
     (TaskState.WAITING_HUMAN, "clarification.answered"): TaskState.NEW,  # intake continues
+    (TaskState.WAITING_HUMAN, "decision.resolved"): TaskState.EXECUTING,
+    (TaskState.WAITING_HUMAN, "decision.resolved_waiting"): TaskState.WAITING_HUMAN,
     (TaskState.PLANNING, "plan.activated"): TaskState.EXECUTING,
+    (TaskState.EXECUTING, "plan.activated"): TaskState.EXECUTING,
+    (TaskState.VERIFYING, "plan.activated"): TaskState.EXECUTING,
+    (TaskState.WAITING_HUMAN, "blocking_gate.opened"): TaskState.WAITING_HUMAN,
     (TaskState.PLANNING, "blocking_gate.opened"): TaskState.WAITING_HUMAN,
     (TaskState.EXECUTING, "blocking_gate.opened"): TaskState.WAITING_HUMAN,
     (TaskState.VERIFYING, "blocking_gate.opened"): TaskState.WAITING_HUMAN,
-    (TaskState.WAITING_HUMAN, "decision.resolved"): TaskState.EXECUTING,  # recomputed later
     (TaskState.EXECUTING, "required_outputs.ready"): TaskState.VERIFYING,
     (TaskState.VERIFYING, "verification.failed"): TaskState.EXECUTING,
+    (TaskState.EXECUTING, "acceptance.ready"): TaskState.WAITING_HUMAN,
     (TaskState.VERIFYING, "acceptance.ready"): TaskState.WAITING_HUMAN,
+    (TaskState.PLANNING, "acceptance.ready"): TaskState.WAITING_HUMAN,
     (TaskState.WAITING_HUMAN, "final.accepted"): TaskState.COMPLETED,
     (TaskState.NEW, "pause.requested"): TaskState.PAUSING,
     (TaskState.WAITING_HUMAN, "pause.requested"): TaskState.PAUSING,
@@ -24,7 +32,8 @@ TASK_TRANSITIONS: dict[tuple[TaskState, str], TaskState] = {
     (TaskState.EXECUTING, "pause.requested"): TaskState.PAUSING,
     (TaskState.VERIFYING, "pause.requested"): TaskState.PAUSING,
     (TaskState.PAUSING, "runtime.quiescent"): TaskState.PAUSED,
-    (TaskState.PAUSED, "resume.requested"): TaskState.WAITING_HUMAN,  # or runnable; recomputed
+    (TaskState.PAUSED, "resume.requested"): TaskState.WAITING_HUMAN,
+    (TaskState.PAUSED, "resume.requested_runnable"): TaskState.EXECUTING,
     (TaskState.NEW, "cancel.requested"): TaskState.CANCELLING,
     (TaskState.WAITING_HUMAN, "cancel.requested"): TaskState.CANCELLING,
     (TaskState.PLANNING, "cancel.requested"): TaskState.CANCELLING,

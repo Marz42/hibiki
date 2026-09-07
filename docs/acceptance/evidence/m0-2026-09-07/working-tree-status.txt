@@ -1,0 +1,7 @@
+ M src/hibiki/application/bootstrap.py
+ M src/hibiki/application/service.py
+ M src/hibiki/domain/guards.py
+ M src/hibiki/domain/transitions.py
+ M src/hibiki/persistence/session.py
+?? docs/acceptance/
+?? tests/application/test_m0_review_regressions.py
