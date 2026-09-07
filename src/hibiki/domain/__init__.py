@@ -1,0 +1,51 @@
+"""Domain package — pure objects, transitions, guards. No ORM/FastAPI."""
+
+from hibiki.domain.enums import (
+    ActorType,
+    AgentRunStatus,
+    AssignmentKind,
+    ContractStatus,
+    DecisionKind,
+    DecisionStatus,
+    DependencyPredicate,
+    GateLifecycle,
+    PlanStatus,
+    SideEffectState,
+    TaskState,
+    Verdict,
+    WorkspaceState,
+    WorkUnitStatus,
+)
+from hibiki.domain.errors import (
+    AuthorizationError,
+    ConflictError,
+    DomainError,
+    IdempotencyConflictError,
+    InvalidTransitionError,
+    NotFoundError,
+    PreconditionError,
+)
+
+__all__ = [
+    "ActorType",
+    "AgentRunStatus",
+    "AssignmentKind",
+    "AuthorizationError",
+    "ConflictError",
+    "ContractStatus",
+    "DecisionKind",
+    "DecisionStatus",
+    "DependencyPredicate",
+    "DomainError",
+    "GateLifecycle",
+    "IdempotencyConflictError",
+    "InvalidTransitionError",
+    "NotFoundError",
+    "PlanStatus",
+    "PreconditionError",
+    "SideEffectState",
+    "TaskState",
+    "Verdict",
+    "WorkUnitStatus",
+    "WorkspaceState",
+]

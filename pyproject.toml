@@ -1,0 +1,43 @@
+[project]
+name = "hibiki"
+version = "0.1.0"
+description = "HIBIKI — Task-centered agent execution system (M0 deterministic kernel)"
+readme = "README.md"
+authors = [
+    { name = "marz", email = "marz@work" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.19.2",
+    "pydantic>=2.13.5",
+    "sqlalchemy>=2.0.52",
+]
+
+[project.scripts]
+hibiki = "hibiki.interfaces.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "hypothesis>=6.167.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
