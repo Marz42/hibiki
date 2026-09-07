@@ -17,7 +17,7 @@ from hibiki.domain.enums import (
 )
 from hibiki.persistence.session import InstanceLock
 from hibiki.runtime.fake_external import FakeExternalAdapter
-from tests.helpers import approve_flow, human_auth, make_core, user_agent_auth
+from tests.helpers import approve_flow, human_auth, make_core, submit_result_and_exit, user_agent_auth
 
 
 class ThrowingOnceExternal(FakeExternalAdapter):
@@ -140,10 +140,11 @@ def test_p1_acceptance_rejects_empty_and_stale_snapshot(tmp_path):
     # complete work, prepare, then bump plan, then old decision must fail
     d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
     run_id = d.data["created_runs"][0]
-    svc.execute(
-        "submit_result",
+    submit_result_and_exit(
+        svc,
         human,
-        {"run_id": run_id, "result": {"outcome": "COMPLETED", "artifact_refs": ["h1"]}},
+        run_id,
+        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["h1"]},
     )
     prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
     assert prep.ok
@@ -174,13 +175,11 @@ def test_p1_completed_cannot_pause(tmp_path):
     human = human_auth()
     task_id, _ = approve_flow(svc, human)
     d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
-    svc.execute(
-        "submit_result",
+    submit_result_and_exit(
+        svc,
         human,
-        {
-            "run_id": d.data["created_runs"][0],
-            "result": {"outcome": "COMPLETED", "artifact_refs": ["h"]},
-        },
+        d.data["created_runs"][0],
+        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["h"]},
     )
     prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
     svc.execute("accept_result", human, {"decision_id": prep.data["decision_id"]})
@@ -444,3 +443,167 @@ def test_p1_contract_resource_limit_synced(tmp_path):
     d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
     assert not d.ok
     assert d.error_code == "resource_limit"
+
+
+def _approve_side_effect(svc, human, task_id, key="pub"):
+    r = svc.execute(
+        "propose_side_effect",
+        human,
+        {
+            "task_id": task_id,
+            "logical_action_key": key,
+            "target_ref": "t",
+            "parameters": {"a": 1},
+        },
+    )
+    assert r.ok
+    effect_id = r.data["effect_id"]
+    svc.execute(
+        "approve_side_effect",
+        human,
+        {
+            "decision_id": r.data["decision_id"],
+            "expected_target_hash": r.data["action_digest"],
+        },
+    )
+    return effect_id
+
+
+def test_p0_paused_blocks_side_effect_dispatch(tmp_path):
+    svc, ctx = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    effect_id = _approve_side_effect(svc, human, task_id, "paused")
+    svc.execute("pause_task", human, {"task_id": task_id})
+    svc.execute("runtime_quiescent", human, {"task_id": task_id})
+    assert svc.get_task(task_id)["state"] == TaskState.PAUSED
+    r = svc.execute("dispatch_side_effect", human, {"effect_id": effect_id})
+    assert not r.ok
+    assert r.error_code == "dispatch_frozen_pause"
+    svc.drain_outbox()
+    assert ctx["external"].effect_counts.get(f"ext:{task_id}:paused", 0) == 0
+
+
+def test_p0_blocking_gate_blocks_side_effect_dispatch(tmp_path):
+    svc, ctx = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    effect_id = _approve_side_effect(svc, human, task_id, "gated")
+    svc.execute("open_blocking_gate", human, {"task_id": task_id, "reason": "other"})
+    assert svc.get_task(task_id)["state"] == TaskState.WAITING_HUMAN
+    r = svc.execute("dispatch_side_effect", human, {"effect_id": effect_id})
+    assert not r.ok
+    assert r.error_code == "dispatch_frozen_gate"
+    svc.drain_outbox()
+    assert ctx["external"].effect_counts.get(f"ext:{task_id}:gated", 0) == 0
+
+
+def test_p1_acceptance_rejects_fail_without_criterion_evidence(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run_id,
+        {"outcome": "COMPLETED", "verdict": "FAIL"},
+    )
+    g = svc.execute("open_blocking_gate", human, {"task_id": task_id, "reason": "need_info"})
+    prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert not prep.ok
+    assert prep.error_code in {"missing_evidence", "blocking_gate_open", "evidence_failed"}
+    # Even without the gate, FAIL without artifact cannot satisfy required criteria
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": g.data["decision_id"], "choice": "APPROVE"},
+    )
+    prep2 = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert not prep2.ok
+    assert prep2.error_code in {"missing_evidence", "evidence_failed"}
+    assert svc.get_task(task_id)["state"] != TaskState.COMPLETED
+
+
+def test_p1_result_does_not_imply_executor_exit(tmp_path):
+    svc, ctx = make_core(tmp_path)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    svc.execute(
+        "submit_result",
+        human,
+        {
+            "run_id": run_id,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["h"],
+            },
+        },
+    )
+    assert ctx["agent"].is_alive(run_id)
+    ws = svc.get_workspace(f"ws_{wu}")
+    assert ws["owner_run_id"] == run_id
+    assert ws["writer_alive"] is True
+    prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert not prep.ok
+    assert prep.error_code == "writer_alive"
+    r = svc.execute("confirm_run_exit", human, {"run_id": run_id})
+    assert r.ok
+    assert not ctx["agent"].is_alive(run_id)
+    ws2 = svc.get_workspace(f"ws_{wu}")
+    assert ws2["owner_run_id"] is None
+    assert ws2["writer_alive"] is False
+
+
+def test_p1_lost_run_recovers_work_unit_for_retry(tmp_path):
+    from hibiki.runtime.clock import FakeClock
+
+    clock = FakeClock()
+    svc, ctx = make_core(tmp_path, clock=clock)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    ctx["agent"].mark_dead(run_id)
+    notes = svc.reconcile()
+    assert any(f"lost:{run_id}" in n for n in notes["notes"])
+    run = next(r for r in svc.list_runs(task_id) if r["run_id"] == run_id)
+    assert run["status"] == AgentRunStatus.LOST
+    wu_row = svc.get_work_unit(wu)
+    assert wu_row["status"] == WorkUnitStatus.PENDING
+    assert wu_row["active_run_id"] is None
+    # advance past backoff
+    clock.advance(seconds=5)
+    r = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert r.ok
+    assert len(r.data["created_runs"]) == 1
+    assert r.data["created_runs"][0] != run_id
+
+
+def test_p1_inbox_replay_preserves_failure(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    r = svc.execute("create_task", human, {"title": "inbox-fail"})
+    task_id = r.data["task_id"]
+    r1 = svc.execute(
+        "dispatch_ready_runs",
+        human,
+        {"task_id": task_id},
+        message_id="same-dispatch-msg",
+    )
+    assert not r1.ok
+    assert r1.error_code == "dispatch_blocked_state"
+    r2 = svc.execute(
+        "dispatch_ready_runs",
+        human,
+        {"task_id": task_id},
+        message_id="same-dispatch-msg",
+    )
+    assert not r2.ok
+    assert r2.replayed
+    assert r2.error_code == "dispatch_blocked_state"
+    assert r2.error_message == r1.error_message

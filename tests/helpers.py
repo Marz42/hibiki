@@ -61,3 +61,21 @@ def approve_flow(svc, auth, *, title: str = "t1"):
     r = svc.execute("activate_minimal_plan", auth, {"task_id": task_id})
     assert r.ok, r
     return task_id, r.data.get("nodes", [None])[0]
+
+
+def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
+    """Submit business result then confirm executor exit (SPEC §8.2)."""
+    payload_result = result or {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": ["artifact-hash-1"],
+    }
+    r = svc.execute(
+        "submit_result",
+        auth,
+        {"run_id": run_id, "result": payload_result},
+    )
+    assert r.ok, r
+    r2 = svc.execute("confirm_run_exit", auth, {"run_id": run_id})
+    assert r2.ok, r2
+    return r

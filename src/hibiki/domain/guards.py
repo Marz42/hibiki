@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hibiki.domain.enums import ActorType, DecisionKind, TaskState
+from hibiki.domain.enums import ActorType, DecisionKind, SideEffectState, TaskState
 from hibiki.domain.errors import AuthorizationError, PreconditionError
 from hibiki.domain.transitions import can_dispatch_business_run, is_terminal_task
 from hibiki.domain.types import AuthContext
@@ -86,6 +86,59 @@ def guard_dispatch(
         raise PreconditionError("cancel intent active", code="dispatch_frozen_cancel")
     if pause_intent:
         raise PreconditionError("pause intent active", code="dispatch_frozen_pause")
+
+
+def guard_side_effect_send(
+    *,
+    task_state: TaskState,
+    cancel_intent: bool,
+    pause_intent: bool,
+    has_blocking_gate: bool,
+    has_active_contract: bool,
+    effect_contract_version: int | None,
+    active_contract_version: int | None,
+    approval_expired: bool,
+    effect_state: SideEffectState,
+    allowed_states: frozenset[SideEffectState],
+) -> None:
+    """Shared eligibility for registering and transmitting external side effects (§7.3, §14.2)."""
+    if cancel_intent or task_state == TaskState.CANCELLING:
+        raise PreconditionError("cancel intent active", code="dispatch_frozen_cancel")
+    if pause_intent or task_state in {TaskState.PAUSING, TaskState.PAUSED}:
+        raise PreconditionError(
+            "pause active; external dispatch frozen",
+            code="dispatch_frozen_pause",
+        )
+    if is_terminal_task(task_state):
+        raise PreconditionError(
+            f"task state {task_state} forbids external dispatch",
+            code="dispatch_blocked_state",
+        )
+    if has_blocking_gate:
+        raise PreconditionError(
+            "blocking gate open; external dispatch frozen",
+            code="dispatch_frozen_gate",
+        )
+    if not has_active_contract or active_contract_version is None:
+        raise PreconditionError(
+            "ACTIVE Contract required before external dispatch",
+            code="no_active_contract",
+        )
+    if (
+        effect_contract_version is not None
+        and effect_contract_version != active_contract_version
+    ):
+        raise PreconditionError(
+            "side effect authorized under superseded contract",
+            code="contract_replaced",
+        )
+    if approval_expired:
+        raise PreconditionError("approval expired", code="approval_expired")
+    if effect_state not in allowed_states:
+        raise PreconditionError(
+            f"effect not eligible for send: {effect_state}",
+            code="not_authorized",
+        )
 
 
 def guard_final_complete(*, task_state: TaskState, has_acceptance: bool) -> None:

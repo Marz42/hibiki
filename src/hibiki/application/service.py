@@ -37,6 +37,7 @@ from hibiki.domain.guards import (
     guard_dispatch,
     guard_human_decision,
     guard_operation,
+    guard_side_effect_send,
 )
 from hibiki.domain.hashing import canonical_json, content_hash, payload_hash
 from hibiki.domain.plan import PlanEdge, PlanNode, validate_dag
@@ -215,7 +216,8 @@ class ApplicationService:
                         run.status = AgentRunStatus.LOST
                         run.terminal_reason = "process_missing"
                         run.finished_at = self.clock.now()
-                        self._clear_run_occupancy(session, run)
+                        self._clear_run_occupancy(session, run, release_workspace=True)
+                        self._recover_work_unit_after_lost_run(session, run)
                         self._append_event(
                             session,
                             task.task_id,
@@ -291,6 +293,7 @@ class ApplicationService:
             "approve_side_effect": self._approve_side_effect,
             "dispatch_side_effect": self._dispatch_side_effect,
             "reconcile_side_effect": self._reconcile_side_effect,
+            "confirm_run_exit": self._confirm_run_exit,
             "open_blocking_gate": self._open_blocking_gate,
             "record_model_usage": self._record_model_usage,
             "set_writer_alive": self._set_writer_alive,
@@ -329,6 +332,38 @@ class ApplicationService:
     # Idempotency + Inbox
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _serialize_command_result(result: CommandResult) -> dict[str, Any]:
+        return {
+            "ok": result.ok,
+            "data": result.data,
+            "error_code": result.error_code,
+            "error_message": result.error_message,
+        }
+
+    @staticmethod
+    def _deserialize_command_result(
+        stored: dict[str, Any], *, replayed: bool
+    ) -> CommandResult:
+        # Backward-compatible: older rows stored only success data, or failure envelope
+        if "ok" in stored:
+            return CommandResult(
+                ok=bool(stored["ok"]),
+                data=stored.get("data") or {},
+                error_code=stored.get("error_code"),
+                error_message=stored.get("error_message"),
+                replayed=replayed,
+            )
+        if stored.get("ok") is False or (
+            "error_code" in stored and "data" not in stored
+        ):
+            return CommandResult.failure(
+                stored.get("error_code") or "unknown",
+                stored.get("error_message") or "replayed failure",
+                data={k: v for k, v in stored.items() if k not in {"ok", "error_code", "error_message"}},
+            )
+        return CommandResult.success(stored, replayed=replayed)
+
     def _check_inbox(
         self,
         session: Session,
@@ -349,8 +384,8 @@ class ApplicationService:
                 "same message_id with different payload",
                 code="inbox_conflict",
             )
-        data = json.loads(row.result_json)
-        return CommandResult.success(data, replayed=True)
+        stored = json.loads(row.result_json)
+        return self._deserialize_command_result(stored, replayed=True)
 
     def _store_inbox(
         self,
@@ -382,11 +417,7 @@ class ApplicationService:
                 # (business idempotency lives in idempotency_keys).
                 idempotency_key=message_id,
                 payload_hash=ph,
-                result_json=canonical_json(result.data if result.ok else {
-                    "ok": False,
-                    "error_code": result.error_code,
-                    "error_message": result.error_message,
-                }),
+                result_json=canonical_json(self._serialize_command_result(result)),
                 created_at=self.clock.now(),
             )
         )
@@ -510,7 +541,13 @@ class ApplicationService:
             return
         self._set_task_state(session, task, "decision.resolved")
 
-    def _clear_run_occupancy(self, session: Session, run: AgentRunRow) -> None:
+    def _clear_run_occupancy(
+        self,
+        session: Session,
+        run: AgentRunRow,
+        *,
+        release_workspace: bool = True,
+    ) -> None:
         if run.work_unit_id:
             marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
             if marker and marker.run_id == run.run_id:
@@ -518,13 +555,107 @@ class ApplicationService:
             wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
             if wu and wu.active_run_id == run.run_id:
                 wu.active_run_id = None
-        if run.workspace_id:
+        if release_workspace and run.workspace_id:
             ws = session.get(WorkspaceRow, run.workspace_id)
             if ws and ws.owner_run_id == run.run_id:
                 ws.writer_alive = False
                 if ws.state != WorkspaceState.QUARANTINED:
                     ws.state = WorkspaceState.READY
                     ws.owner_run_id = None
+
+    def _recover_work_unit_after_lost_run(
+        self, session: Session, run: AgentRunRow
+    ) -> None:
+        """After LOST confirmation, restore a runnable or explicitly blocked Work Unit."""
+        if not run.work_unit_id:
+            return
+        wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+        if wu is None or wu.status != WorkUnitStatus.RUNNING:
+            return
+        now = self.clock.now()
+        if wu.attempt_count >= DEFAULTS.max_work_unit_attempts:
+            wu.status = transition_work_unit(WorkUnitStatus.RUNNING, "run.blocked")
+            wu.blocked_reason = "attempts_exhausted"
+            wu.next_retry_at = None
+            task = session.get(TaskRow, run.task_id)
+            if task and not is_terminal_task(TaskState(task.state)):
+                if TaskState(task.state) != TaskState.WAITING_HUMAN:
+                    self._set_task_state(
+                        session,
+                        task,
+                        "blocking_gate.opened",
+                        reason=WaitingReason.EXECUTION_BLOCKED,
+                    )
+            return
+        wu.status = transition_work_unit(WorkUnitStatus.RUNNING, "run.retryable_failed")
+        backoff_idx = min(max(wu.attempt_count - 1, 0), len(DEFAULTS.retry_backoff_seconds) - 1)
+        wu.next_retry_at = now + timedelta(seconds=DEFAULTS.retry_backoff_seconds[backoff_idx])
+        wu.blocked_reason = None
+
+    def _task_has_live_writer(self, session: Session, task_id: str) -> bool:
+        """True if any adapter instance or workspace owner still indicates a live writer."""
+        for run in session.scalars(
+            select(AgentRunRow).where(AgentRunRow.task_id == task_id)
+        ):
+            if run.status in {AgentRunStatus.CREATED, AgentRunStatus.RUNNING}:
+                insp = self.agent_adapter.inspect(run.run_id)
+                if insp.get("alive") or insp.get("writer_alive"):
+                    return True
+            if run.workspace_id:
+                ws = session.get(WorkspaceRow, run.workspace_id)
+                if ws and ws.owner_run_id == run.run_id:
+                    insp = self.agent_adapter.inspect(run.run_id)
+                    if insp.get("alive") or insp.get("writer_alive") or ws.writer_alive:
+                        return True
+        return False
+
+    def _assert_no_live_writers(self, session: Session, task_id: str) -> None:
+        if self._task_has_live_writer(session, task_id):
+            raise PreconditionError(
+                "executor still alive or workspace writer not released",
+                code="writer_alive",
+            )
+
+    def _guard_side_effect_eligibility(
+        self,
+        session: Session,
+        task: TaskRow,
+        effect: SideEffectRow,
+        *,
+        allowed_states: frozenset[SideEffectState],
+    ) -> None:
+        contract = self._active_contract(session, task.task_id)
+        expired = bool(
+            effect.expires_at and as_utc_naive(effect.expires_at) < self.clock.now()
+        )
+        guard_side_effect_send(
+            task_state=TaskState(task.state),
+            cancel_intent=bool(task.cancel_intent),
+            pause_intent=bool(task.pause_intent),
+            has_blocking_gate=self._has_blocking_gate(session, task.task_id),
+            has_active_contract=contract is not None,
+            effect_contract_version=effect.contract_version,
+            active_contract_version=contract.contract_version if contract else None,
+            approval_expired=expired,
+            effect_state=SideEffectState(effect.state),
+            allowed_states=allowed_states,
+        )
+
+    def _other_blocking_gates(
+        self, session: Session, task_id: str, *, exclude_decision_id: str | None = None
+    ) -> list[GateRow]:
+        session.flush()
+        gates = session.scalars(
+            select(GateRow).where(
+                GateRow.task_id == task_id,
+                GateRow.lifecycle.in_(
+                    [GateLifecycle.OPEN, GateLifecycle.APPROVED_PENDING_APPLY]
+                ),
+            )
+        ).all()
+        if exclude_decision_id is None:
+            return list(gates)
+        return [g for g in gates if g.decision_id != exclude_decision_id]
 
     def _count_active_runs(
         self, session: Session, *, task_id: str | None = None
@@ -954,6 +1085,30 @@ class ApplicationService:
                     "incomplete work units block acceptance",
                     code="incomplete_work",
                 )
+            # Other open gates (clarification, side-effect, resource, …) block completion
+            other_gates = self._other_blocking_gates(
+                session, task.task_id, exclude_decision_id=decision.decision_id
+            )
+            if other_gates:
+                raise PreconditionError(
+                    "other blocking gates remain",
+                    code="blocking_gate_open",
+                )
+            self._assert_no_live_writers(session, task.task_id)
+            # Re-validate required criterion evidence on the frozen snapshot
+            snap_content = json.loads(snap.content_json)
+            contract = self._active_contract(session, task.task_id)
+            if contract is None:
+                raise PreconditionError("no active contract", code="no_active_contract")
+            content = json.loads(contract.content_json)
+            required = [
+                c
+                for c in (content.get("acceptance_criteria") or [])
+                if c.get("required", True)
+            ]
+            self._assert_acceptance_evidence(
+                required, snap_content.get("evidence") or []
+            )
             # no active runs
             active = session.scalars(
                 select(AgentRunRow).where(
@@ -1483,13 +1638,8 @@ class ApplicationService:
             marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
             if marker:
                 session.delete(marker)
-            if run.workspace_id:
-                ws = session.get(WorkspaceRow, run.workspace_id)
-                if ws and ws.owner_run_id == run.run_id:
-                    ws.writer_alive = False
-                    if ws.state != WorkspaceState.QUARANTINED:
-                        ws.state = WorkspaceState.READY
-                        ws.owner_run_id = None
+            # Result completion ≠ executor exit: keep Workspace ownership until
+            # confirm_run_exit / stop acknowledgment (§8.2).
 
         self._append_event(
             session,
@@ -1504,6 +1654,7 @@ class ApplicationService:
                 "status": run.status,
                 "work_unit_id": run.work_unit_id,
                 "verdict": result.get("verdict"),
+                "workspace_released": False,
             }
         )
 
@@ -1528,24 +1679,24 @@ class ApplicationService:
         task = self._get_task(session, payload["task_id"])
         if task.state != TaskState.PAUSING:
             raise PreconditionError("not pausing", code="invalid_state")
-        # Refuse PAUSED while any writer is still alive
-        for run in session.scalars(
-            select(AgentRunRow).where(
-                AgentRunRow.task_id == task.task_id,
-                AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING]),
-            )
-        ):
-            insp = self.agent_adapter.inspect(run.run_id)
-            if insp.get("alive") or insp.get("writer_alive"):
-                if run.workspace_id:
+        # Refuse PAUSED while any writer is still alive (including SUCCEEDED runs
+        # that submitted results but have not confirmed exit).
+        if self._task_has_live_writer(session, task.task_id):
+            for run in session.scalars(
+                select(AgentRunRow).where(AgentRunRow.task_id == task.task_id)
+            ):
+                if not run.workspace_id:
+                    continue
+                insp = self.agent_adapter.inspect(run.run_id)
+                if insp.get("alive") or insp.get("writer_alive"):
                     ws = session.get(WorkspaceRow, run.workspace_id)
                     if ws:
                         ws.state = WorkspaceState.QUARANTINED
                         ws.writer_alive = True
-                raise PreconditionError(
-                    "writer still alive; cannot mark PAUSED",
-                    code="writer_alive",
-                )
+            raise PreconditionError(
+                "writer still alive; cannot mark PAUSED",
+                code="writer_alive",
+            )
         for wu in session.scalars(
             select(WorkUnitExecutionRow).where(
                 WorkUnitExecutionRow.task_id == task.task_id,
@@ -1678,6 +1829,7 @@ class ApplicationService:
             raise PreconditionError(
                 "unresolved external effects", code="unresolved_external"
             )
+        self._assert_no_live_writers(session, task.task_id)
         for run in session.scalars(
             select(AgentRunRow).where(
                 AgentRunRow.task_id == task.task_id,
@@ -1716,6 +1868,15 @@ class ApplicationService:
                 continue
             ob.status = OutboxStatus.DEAD
             ob.revoke_epoch = task.revoke_epoch
+            if ob.command_type == "side_effect.dispatch":
+                payload = json.loads(ob.payload_json)
+                effect = session.get(SideEffectRow, payload.get("effect_id"))
+                if effect and effect.state == SideEffectState.DISPATCHING:
+                    # Never sent — do not leave DISPATCHING stuck without outbox
+                    if task.cancel_intent:
+                        effect.state = SideEffectState.CANCELLED
+                    else:
+                        effect.state = SideEffectState.AUTHORIZED
 
     def _invalidate_pending_starts(self, session: Session, task: TaskRow) -> None:
         self._invalidate_pending_outbox(session, task)
@@ -1741,6 +1902,133 @@ class ApplicationService:
                 )
             )
 
+    def _assert_acceptance_evidence(
+        self, required: list[dict[str, Any]], evidence: list[dict[str, Any]]
+    ) -> None:
+        by_criterion: dict[str, dict[str, Any]] = {}
+        for item in evidence:
+            cid = item.get("criterion_id")
+            if not cid:
+                continue
+            by_criterion[str(cid)] = item
+        for crit in required:
+            cid = str(crit["criterion_id"])
+            item = by_criterion.get(cid)
+            if item is None:
+                raise PreconditionError(
+                    f"missing evidence for criterion {cid}",
+                    code="missing_evidence",
+                )
+            artifact_hash = item.get("artifact_hash") or item.get("artifact_ref")
+            if not artifact_hash:
+                raise PreconditionError(
+                    f"criterion {cid} lacks fixed artifact hash",
+                    code="missing_evidence",
+                )
+            verdict = item.get("verdict")
+            if verdict == Verdict.FAIL or verdict == "FAIL":
+                raise PreconditionError(
+                    f"criterion {cid} evidence verdict is FAIL",
+                    code="evidence_failed",
+                )
+            if verdict not in {None, Verdict.PASS, "PASS"}:
+                raise PreconditionError(
+                    f"criterion {cid} evidence verdict not PASS",
+                    code="missing_evidence",
+                )
+
+    def _build_acceptance_evidence(
+        self,
+        session: Session,
+        nodes: list[dict[str, Any]],
+        required: list[dict[str, Any]],
+        extra_evidence: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Map required criteria to fixed artifact hashes; never invent PASS from FAIL."""
+        evidence: list[dict[str, Any]] = []
+        for item in extra_evidence:
+            if item.get("criterion_id"):
+                evidence.append(dict(item))
+
+        candidates: list[dict[str, Any]] = []
+        for node in nodes:
+            wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
+            assert wu is not None
+            if wu.selected_verdict in {Verdict.FAIL, "FAIL"}:
+                continue
+            if not wu.verified_artifact_hash:
+                continue
+            run_evidence: list[dict[str, Any]] = []
+            if wu.selected_result_ref:
+                for run in session.scalars(
+                    select(AgentRunRow).where(
+                        AgentRunRow.work_unit_id == wu.work_unit_id,
+                        AgentRunRow.result_ref == wu.selected_result_ref,
+                    )
+                ):
+                    result = json.loads(run.result_json or "{}")
+                    for ev in result.get("acceptance_evidence") or []:
+                        run_evidence.append(ev)
+            if run_evidence:
+                for ev in run_evidence:
+                    if not ev.get("criterion_id"):
+                        continue
+                    artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
+                    if not artifact_hash:
+                        continue
+                    if ev.get("verdict") in {Verdict.FAIL, "FAIL"}:
+                        continue
+                    candidates.append(
+                        {
+                            "criterion_id": ev["criterion_id"],
+                            "work_unit_id": wu.work_unit_id,
+                            "result_ref": wu.selected_result_ref,
+                            "artifact_hash": artifact_hash,
+                            "verdict": ev.get("verdict")
+                            or wu.selected_verdict
+                            or Verdict.PASS,
+                        }
+                    )
+            else:
+                candidates.append(
+                    {
+                        "work_unit_id": wu.work_unit_id,
+                        "result_ref": wu.selected_result_ref,
+                        "artifact_hash": wu.verified_artifact_hash,
+                        "verdict": wu.selected_verdict or Verdict.PASS,
+                    }
+                )
+
+        covered = {str(e["criterion_id"]) for e in evidence if e.get("criterion_id")}
+        for crit in required:
+            cid = str(crit["criterion_id"])
+            if cid in covered:
+                continue
+            idx = next(
+                (
+                    i
+                    for i, e in enumerate(candidates)
+                    if e.get("criterion_id") == cid and e.get("artifact_hash")
+                ),
+                None,
+            )
+            if idx is None:
+                idx = next(
+                    (
+                        i
+                        for i, e in enumerate(candidates)
+                        if not e.get("criterion_id") and e.get("artifact_hash")
+                    ),
+                    None,
+                )
+            if idx is None:
+                continue
+            item = dict(candidates.pop(idx))
+            item["criterion_id"] = cid
+            evidence.append(item)
+            covered.add(cid)
+        return evidence
+
     def _prepare_acceptance(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
@@ -1757,6 +2045,14 @@ class ApplicationService:
         if unknown:
             raise PreconditionError("UNKNOWN side effects", code="unknown_side_effect")
 
+        # Other blocking gates must be resolved before final acceptance
+        if self._other_blocking_gates(session, task.task_id):
+            raise PreconditionError(
+                "other blocking gates remain",
+                code="blocking_gate_open",
+            )
+        self._assert_no_live_writers(session, task.task_id)
+
         # All current-plan work units must be DONE
         plan_marker = session.get(ActivePlanMarker, task.task_id)
         if plan_marker is None:
@@ -1769,7 +2065,6 @@ class ApplicationService:
         ).one()
         nodes = json.loads(plan.nodes_json)
         deliverables = []
-        evidence = []
         for node in nodes:
             wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
             if wu is None or wu.status != WorkUnitStatus.DONE:
@@ -1789,13 +2084,6 @@ class ApplicationService:
                     "verdict": wu.selected_verdict,
                 }
             )
-            evidence.append(
-                {
-                    "work_unit_id": wu.work_unit_id,
-                    "result_ref": wu.selected_result_ref,
-                    "artifact_hash": wu.verified_artifact_hash,
-                }
-            )
 
         content = json.loads(contract.content_json)
         required = [
@@ -1803,15 +2091,10 @@ class ApplicationService:
             for c in (content.get("acceptance_criteria") or [])
             if c.get("required", True)
         ]
-        if required and not evidence:
-            raise PreconditionError(
-                "required acceptance criteria lack evidence",
-                code="missing_evidence",
-            )
-        # Caller may supply extra evidence, but Core requires non-empty mapped evidence
-        extra_evidence = payload.get("evidence") or []
-        if extra_evidence:
-            evidence.extend(extra_evidence)
+        evidence = self._build_acceptance_evidence(
+            session, nodes, required, payload.get("evidence") or []
+        )
+        self._assert_acceptance_evidence(required, evidence)
 
         self._supersede_pending_acceptance(session, task.task_id)
 
@@ -2039,14 +2322,12 @@ class ApplicationService:
         if effect is None:
             raise NotFoundError("effect not found")
         task = self._get_task(session, effect.task_id)
-        if effect.state != SideEffectState.AUTHORIZED:
-            raise PreconditionError(
-                f"effect not authorized: {effect.state}", code="not_authorized"
-            )
-        if effect.expires_at and as_utc_naive(effect.expires_at) < self.clock.now():
-            raise PreconditionError("approval expired", code="approval_expired")
-        if task.cancel_intent:
-            raise PreconditionError("cancel intent", code="cancel_intent")
+        self._guard_side_effect_eligibility(
+            session,
+            task,
+            effect,
+            allowed_states=frozenset({SideEffectState.AUTHORIZED}),
+        )
         # claim
         effect.state = transition_side_effect(SideEffectState(effect.state), "claim_dispatch")
         effect.dispatch_attempts += 1
@@ -2182,6 +2463,7 @@ class ApplicationService:
             "blocking_gate.opened",
             reason=reason,
         )
+        self._invalidate_pending_outbox(session, task)
         return CommandResult.success(
             {"task_id": task.task_id, "decision_id": decision_id, "state": task.state}
         )
@@ -2230,6 +2512,50 @@ class ApplicationService:
                 "task_id": task.task_id,
                 "model_calls_used": task.model_calls_used,
                 "limit": task.model_call_limit,
+            }
+        )
+
+    def _confirm_run_exit(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Confirm executor exit and release Workspace — separate from Result (§8.2)."""
+        run = session.get(AgentRunRow, payload["run_id"])
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        insp = self.agent_adapter.inspect(run.run_id)
+        if insp.get("alive") or insp.get("writer_alive"):
+            # Attempt cooperative stop then re-inspect
+            stop = self.agent_adapter.stop(run.run_id, payload.get("reason") or "confirm_exit")
+            insp = self.agent_adapter.inspect(run.run_id)
+            if stop.get("alive") or insp.get("alive") or insp.get("writer_alive"):
+                if run.workspace_id:
+                    ws = session.get(WorkspaceRow, run.workspace_id)
+                    if ws:
+                        ws.state = WorkspaceState.QUARANTINED
+                        ws.writer_alive = True
+                raise PreconditionError(
+                    "executor still alive after stop",
+                    code="writer_alive",
+                )
+        if run.workspace_id:
+            ws = session.get(WorkspaceRow, run.workspace_id)
+            if ws and ws.owner_run_id == run.run_id:
+                ws.writer_alive = False
+                if ws.state != WorkspaceState.QUARANTINED:
+                    ws.state = WorkspaceState.READY
+                    ws.owner_run_id = None
+        self._append_event(
+            session,
+            run.task_id,
+            "run.exit_confirmed",
+            auth_actor=auth.actor_id,
+            payload={"run_id": run.run_id},
+        )
+        return CommandResult.success(
+            {
+                "run_id": run.run_id,
+                "workspace_released": True,
+                "alive": False,
             }
         )
 
@@ -2429,22 +2755,39 @@ class ApplicationService:
         if task and row.command_type == "side_effect.dispatch":
             payload = json.loads(row.payload_json)
             effect = session.get(SideEffectRow, payload.get("effect_id"))
-            if (
-                task.cancel_intent
-                or row.revoke_epoch < task.revoke_epoch
-                or effect is None
-                or effect.state
-                not in {SideEffectState.DISPATCHING, SideEffectState.AUTHORIZED}
-            ):
+            if effect is None or task is None:
                 row.status = OutboxStatus.DEAD
-                if effect and effect.state == SideEffectState.AUTHORIZED:
-                    # cancelled before send
-                    if task.cancel_intent:
-                        effect.state = SideEffectState.CANCELLED
                 return None
-            # Re-validate authorization window before claiming send
-            if effect.expires_at and as_utc_naive(effect.expires_at) < self.clock.now():
+            try:
+                self._guard_side_effect_eligibility(
+                    session,
+                    task,
+                    effect,
+                    allowed_states=frozenset(
+                        {SideEffectState.DISPATCHING, SideEffectState.AUTHORIZED}
+                    ),
+                )
+            except PreconditionError:
                 row.status = OutboxStatus.DEAD
+                if effect.state == SideEffectState.DISPATCHING:
+                    if task.cancel_intent or TaskState(task.state) == TaskState.CANCELLING:
+                        effect.state = SideEffectState.CANCELLED
+                    else:
+                        effect.state = SideEffectState.AUTHORIZED
+                elif (
+                    effect.state == SideEffectState.AUTHORIZED
+                    and (task.cancel_intent or TaskState(task.state) == TaskState.CANCELLING)
+                ):
+                    effect.state = SideEffectState.CANCELLED
+                return None
+            if row.revoke_epoch < task.revoke_epoch:
+                row.status = OutboxStatus.DEAD
+                if effect.state == SideEffectState.DISPATCHING:
+                    effect.state = (
+                        SideEffectState.CANCELLED
+                        if task.cancel_intent
+                        else SideEffectState.AUTHORIZED
+                    )
                 return None
             if effect.state == SideEffectState.AUTHORIZED:
                 effect.state = SideEffectState.DISPATCHING
@@ -2543,6 +2886,9 @@ class ApplicationService:
                     ws.writer_alive = True
                 else:
                     ws.writer_alive = False
+                    if ws.owner_run_id == run.run_id and ws.state != WorkspaceState.QUARANTINED:
+                        ws.state = WorkspaceState.READY
+                        ws.owner_run_id = None
 
     def _ack_outbox(self, session: Session, outbox_id: str, *, dead: bool = False) -> None:
         row = session.get(OutboxRow, outbox_id)
@@ -2553,7 +2899,7 @@ class ApplicationService:
     def _do_external_dispatch(self, item: dict[str, Any]) -> None:
         payload = item["payload"]
 
-        # Final pre-send gate: cancel / revoke / non-DISPATCHING must not call adapter
+        # Final pre-send gate: cancel / pause / gate / contract / non-DISPATCHING
         def _precheck(session: Session) -> bool:
             row = session.get(OutboxRow, item["outbox_id"])
             effect = session.get(SideEffectRow, payload["effect_id"])
@@ -2562,17 +2908,26 @@ class ApplicationService:
                 return False
             if task is None:
                 task = session.get(TaskRow, effect.task_id)
-            if (
-                task is None
-                or task.cancel_intent
-                or effect.state != SideEffectState.DISPATCHING
-                or row.status == OutboxStatus.DEAD
-            ):
+            if task is None or row.status == OutboxStatus.DEAD:
                 if row:
                     row.status = OutboxStatus.DEAD
-                if effect and effect.state == SideEffectState.DISPATCHING and task and task.cancel_intent:
+                return False
+            try:
+                self._guard_side_effect_eligibility(
+                    session,
+                    task,
+                    effect,
+                    allowed_states=frozenset({SideEffectState.DISPATCHING}),
+                )
+            except PreconditionError:
+                row.status = OutboxStatus.DEAD
+                if effect.state == SideEffectState.DISPATCHING and (
+                    task.cancel_intent or TaskState(task.state) == TaskState.CANCELLING
+                ):
                     # Unsent cancel path — only if we never called adapter
                     effect.state = SideEffectState.CANCELLED
+                elif effect.state == SideEffectState.DISPATCHING:
+                    effect.state = SideEffectState.AUTHORIZED
                 return False
             return True
 
