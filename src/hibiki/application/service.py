@@ -45,6 +45,7 @@ from hibiki.domain.ports import AgentAdapter, Clock, ExternalAdapter
 from hibiki.domain.transitions import (
     is_terminal_run,
     is_terminal_task,
+    is_terminal_work_unit,
     transition_run,
     transition_side_effect,
     transition_task,
@@ -57,6 +58,7 @@ from hibiki.persistence.models import (
     ActivePlanMarker,
     AgentProfileRow,
     AgentRunRow,
+    ArtifactRow,
     ContextManifestRow,
     ContractRow,
     DecisionRow,
@@ -1321,18 +1323,31 @@ class ApplicationService:
                     )
                 )
             else:
-                # Bind execution to the Plan node's fixed Spec version
-                if exec_existing.spec_version != n.spec_version:
-                    if exec_existing.status == WorkUnitStatus.DONE:
-                        # Spec change: create new pending cycle is not automatic reuse
-                        exec_existing.status = WorkUnitStatus.PENDING
-                        exec_existing.selected_result_ref = None
-                        exec_existing.selected_verdict = None
-                        exec_existing.verified_artifact_hash = None
-                    exec_existing.spec_version = n.spec_version
-                if exec_existing.status == WorkUnitStatus.CANCELLED:
-                    exec_existing.status = WorkUnitStatus.PENDING
-                    exec_existing.blocked_reason = None
+                # §6.4 / §8.1: terminal Work Units never revive; definition change
+                # requires a new work_unit_id rather than mutating Execution in place.
+                if is_terminal_work_unit(WorkUnitStatus(exec_existing.status)):
+                    if exec_existing.spec_version != n.spec_version:
+                        raise PreconditionError(
+                            f"work unit {n.work_unit_id} is terminal at spec "
+                            f"v{exec_existing.spec_version}; definition change needs a new work_unit_id",
+                            code="work_unit_spec_immutable",
+                        )
+                    # Same spec + DONE/FAILED/CANCELLED: keep historical fact
+                elif exec_existing.spec_version != n.spec_version:
+                    if (
+                        exec_existing.status == WorkUnitStatus.PENDING
+                        and not exec_existing.active_run_id
+                        and int(exec_existing.attempt_count or 0) == 0
+                    ):
+                        # Never started — allow rebinding before first Run
+                        exec_existing.spec_version = n.spec_version
+                    else:
+                        raise PreconditionError(
+                            f"work unit {n.work_unit_id} already bound to spec "
+                            f"v{exec_existing.spec_version} with progress; "
+                            "definition/input change requires a new work_unit_id",
+                            code="work_unit_spec_immutable",
+                        )
 
             ws_id = f"ws_{n.work_unit_id}"
             ws = session.get(WorkspaceRow, ws_id)
@@ -1614,6 +1629,83 @@ class ApplicationService:
         result = payload.get("result") or {}
         outcome = result.get("outcome") or "COMPLETED"
         now = self.clock.now()
+
+        # Fixed assignment: result may complete the Work Unit only if the Run's
+        # frozen spec still matches the current Execution binding (§6 / §8.1).
+        assignment_current = True
+        if run.work_unit_id:
+            wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+            if wu is None:
+                assignment_current = False
+            elif run.work_unit_spec_version is not None and int(
+                run.work_unit_spec_version
+            ) != int(wu.spec_version):
+                assignment_current = False
+            elif wu.active_run_id and wu.active_run_id != run.run_id:
+                assignment_current = False
+            else:
+                plan_marker = session.get(ActivePlanMarker, task.task_id)
+                if plan_marker is not None:
+                    plan = session.scalars(
+                        select(PlanRow).where(
+                            PlanRow.task_id == task.task_id,
+                            PlanRow.plan_version == plan_marker.plan_version,
+                        )
+                    ).first()
+                    if plan is not None:
+                        nodes = json.loads(plan.nodes_json)
+                        node = next(
+                            (n for n in nodes if n["work_unit_id"] == run.work_unit_id),
+                            None,
+                        )
+                        if node is None:
+                            assignment_current = False
+                        elif run.work_unit_spec_version is not None and int(
+                            node.get("spec_version") or 1
+                        ) != int(run.work_unit_spec_version):
+                            assignment_current = False
+
+        if run.work_unit_id and not assignment_current:
+            run.late_arrival = True
+            run.result_json = canonical_json(result)
+            run.result_ref = payload.get("result_ref") or new_id("res")
+            if not is_terminal_run(AgentRunStatus(run.status)):
+                run.status = transition_run(AgentRunStatus(run.status), "succeed")
+                run.finished_at = now
+            # Free occupancy without completing a superseded Work Unit definition
+            marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
+            if marker and marker.run_id == run.run_id:
+                session.delete(marker)
+            wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+            if wu and wu.active_run_id == run.run_id:
+                wu.active_run_id = None
+            self._register_result_artifacts(
+                session,
+                task.task_id,
+                run,
+                result,
+                apply_to_work_unit=False,
+            )
+            self._append_event(
+                session,
+                task.task_id,
+                "run.late_result",
+                auth_actor=auth.actor_id,
+                payload={
+                    "run_id": run.run_id,
+                    "reason": "assignment_superseded",
+                    "work_unit_spec_version": run.work_unit_spec_version,
+                },
+            )
+            return CommandResult.success(
+                {
+                    "run_id": run.run_id,
+                    "late_arrival": True,
+                    "accepted_as_history": True,
+                    "assignment_current": False,
+                }
+            )
+
         run.result_json = canonical_json(result)
         run.result_ref = payload.get("result_ref") or new_id("res")
         run.status = transition_run(AgentRunStatus(run.status), "succeed")
@@ -1638,6 +1730,13 @@ class ApplicationService:
             marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
             if marker:
                 session.delete(marker)
+            self._register_result_artifacts(
+                session,
+                task.task_id,
+                run,
+                result,
+                apply_to_work_unit=True,
+            )
             # Result completion ≠ executor exit: keep Workspace ownership until
             # confirm_run_exit / stop acknowledgment (§8.2).
 
@@ -1657,6 +1756,56 @@ class ApplicationService:
                 "workspace_released": False,
             }
         )
+
+    def _register_result_artifacts(
+        self,
+        session: Session,
+        task_id: str,
+        run: AgentRunRow,
+        result: dict[str, Any],
+        *,
+        apply_to_work_unit: bool,
+    ) -> None:
+        refs = result.get("verified_artifact_refs") or result.get("artifact_refs") or []
+        verdict = result.get("verdict")
+        now = self.clock.now()
+        for ref in refs:
+            artifact_hash = ref if isinstance(ref, str) else (ref or {}).get("hash")
+            if not artifact_hash:
+                continue
+            existing = session.get(ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash})
+            if existing is None:
+                session.add(
+                    ArtifactRow(
+                        task_id=task_id,
+                        artifact_hash=str(artifact_hash),
+                        work_unit_id=run.work_unit_id,
+                        run_id=run.run_id,
+                        result_ref=run.result_ref,
+                        verdict=verdict,
+                        created_at=now,
+                    )
+                )
+            elif apply_to_work_unit and existing.verdict is None and verdict is not None:
+                existing.verdict = verdict
+        # Structured acceptance_evidence artifacts
+        for ev in result.get("acceptance_evidence") or []:
+            artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
+            if not artifact_hash:
+                continue
+            existing = session.get(ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash})
+            if existing is None:
+                session.add(
+                    ArtifactRow(
+                        task_id=task_id,
+                        artifact_hash=str(artifact_hash),
+                        work_unit_id=run.work_unit_id,
+                        run_id=run.run_id,
+                        result_ref=run.result_ref,
+                        verdict=ev.get("verdict") or verdict,
+                        created_at=now,
+                    )
+                )
 
     def _pause_task(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
@@ -1868,7 +2017,23 @@ class ApplicationService:
                 continue
             ob.status = OutboxStatus.DEAD
             ob.revoke_epoch = task.revoke_epoch
-            if ob.command_type == "side_effect.dispatch":
+            if ob.command_type == "agent.start":
+                payload = json.loads(ob.payload_json)
+                run = session.get(AgentRunRow, payload.get("run_id"))
+                if run is not None and run.status == AgentRunStatus.CREATED:
+                    # Revoke unsent start and free occupancy so a later dispatch
+                    # can create a new Run after the Gate/pause clears.
+                    run.status = AgentRunStatus.CANCELLED
+                    run.finished_at = self.clock.now()
+                    run.terminal_reason = "start_revoked"
+                    self._clear_run_occupancy(session, run, release_workspace=True)
+                    if run.work_unit_id:
+                        wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+                        if wu is not None and wu.status == WorkUnitStatus.RUNNING:
+                            wu.status = WorkUnitStatus.PENDING
+                            wu.blocked_reason = None
+                            wu.active_run_id = None
+            elif ob.command_type == "side_effect.dispatch":
                 payload = json.loads(ob.payload_json)
                 effect = session.get(SideEffectRow, payload.get("effect_id"))
                 if effect and effect.state == SideEffectState.DISPATCHING:
@@ -1880,14 +2045,41 @@ class ApplicationService:
 
     def _invalidate_pending_starts(self, session: Session, task: TaskRow) -> None:
         self._invalidate_pending_outbox(session, task)
+
+    def _runs_requiring_stop(self, session: Session, task_id: str) -> list[AgentRunRow]:
+        """Stop targets: non-terminal runs and any Workspace owner still alive."""
+        selected: dict[str, AgentRunRow] = {}
+        for run in session.scalars(
+            select(AgentRunRow).where(AgentRunRow.task_id == task_id)
+        ):
+            if run.status in {AgentRunStatus.CREATED, AgentRunStatus.RUNNING}:
+                selected[run.run_id] = run
+                continue
+            if not run.workspace_id:
+                continue
+            ws = session.get(WorkspaceRow, run.workspace_id)
+            if ws is None or ws.owner_run_id != run.run_id:
+                continue
+            insp = self.agent_adapter.inspect(run.run_id)
+            if insp.get("alive") or insp.get("writer_alive") or ws.writer_alive:
+                selected[run.run_id] = run
+        return list(selected.values())
+
     def _enqueue_stops(self, session: Session, task: TaskRow, *, reason: str) -> None:
         now = self.clock.now()
-        for run in session.scalars(
-            select(AgentRunRow).where(
-                AgentRunRow.task_id == task.task_id,
-                AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING]),
+        pending_stops = {
+            json.loads(ob.payload_json).get("run_id")
+            for ob in session.scalars(
+                select(OutboxRow).where(
+                    OutboxRow.task_id == task.task_id,
+                    OutboxRow.command_type == "agent.stop",
+                    OutboxRow.status.in_([OutboxStatus.PENDING, OutboxStatus.IN_FLIGHT]),
+                )
             )
-        ):
+        }
+        for run in self._runs_requiring_stop(session, task.task_id):
+            if run.run_id in pending_stops:
+                continue
             session.add(
                 OutboxRow(
                     outbox_id=new_id("ob"),
@@ -1926,37 +2118,85 @@ class ApplicationService:
                     code="missing_evidence",
                 )
             verdict = item.get("verdict")
-            if verdict == Verdict.FAIL or verdict == "FAIL":
+            if verdict in {Verdict.FAIL, "FAIL"}:
                 raise PreconditionError(
                     f"criterion {cid} evidence verdict is FAIL",
                     code="evidence_failed",
                 )
-            if verdict not in {None, Verdict.PASS, "PASS"}:
+            if verdict not in {Verdict.PASS, "PASS"}:
                 raise PreconditionError(
                     f"criterion {cid} evidence verdict not PASS",
                     code="missing_evidence",
                 )
 
+    def _resolve_registered_artifact(
+        self, session: Session, task_id: str, artifact_hash: str
+    ) -> ArtifactRow:
+        row = session.get(
+            ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash}
+        )
+        if row is None:
+            raise PreconditionError(
+                f"artifact {artifact_hash} is not registered for this task",
+                code="unregistered_artifact",
+            )
+        return row
+
     def _build_acceptance_evidence(
         self,
         session: Session,
+        task_id: str,
         nodes: list[dict[str, Any]],
         required: list[dict[str, Any]],
         extra_evidence: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Map required criteria to fixed artifact hashes; never invent PASS from FAIL."""
+        """Map criteria only via Core-registered artifacts; never trust client PASS."""
         evidence: list[dict[str, Any]] = []
+        current_wu_ids = {n["work_unit_id"] for n in nodes}
+
         for item in extra_evidence:
-            if item.get("criterion_id"):
-                evidence.append(dict(item))
+            cid = item.get("criterion_id")
+            artifact_hash = item.get("artifact_hash") or item.get("artifact_ref")
+            if not cid or not artifact_hash:
+                raise PreconditionError(
+                    "extra evidence requires criterion_id and artifact_hash",
+                    code="missing_evidence",
+                )
+            registered = self._resolve_registered_artifact(
+                session, task_id, str(artifact_hash)
+            )
+            if registered.work_unit_id and registered.work_unit_id not in current_wu_ids:
+                raise PreconditionError(
+                    f"artifact {artifact_hash} is not from the current plan deliverables",
+                    code="evidence_not_current",
+                )
+            evidence.append(
+                {
+                    "criterion_id": str(cid),
+                    "work_unit_id": registered.work_unit_id,
+                    "result_ref": registered.result_ref,
+                    "artifact_hash": registered.artifact_hash,
+                    "verdict": registered.verdict,
+                    "run_id": registered.run_id,
+                }
+            )
 
         candidates: list[dict[str, Any]] = []
         for node in nodes:
             wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
             assert wu is not None
-            if wu.selected_verdict in {Verdict.FAIL, "FAIL"}:
+            if wu.selected_verdict not in {Verdict.PASS, "PASS"}:
                 continue
             if not wu.verified_artifact_hash:
+                continue
+            registered = session.get(
+                ArtifactRow,
+                {
+                    "task_id": task_id,
+                    "artifact_hash": wu.verified_artifact_hash,
+                },
+            )
+            if registered is None or registered.verdict not in {Verdict.PASS, "PASS"}:
                 continue
             run_evidence: list[dict[str, Any]] = []
             if wu.selected_result_ref:
@@ -1976,17 +2216,18 @@ class ApplicationService:
                     artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
                     if not artifact_hash:
                         continue
-                    if ev.get("verdict") in {Verdict.FAIL, "FAIL"}:
+                    reg = self._resolve_registered_artifact(
+                        session, task_id, str(artifact_hash)
+                    )
+                    if reg.verdict not in {Verdict.PASS, "PASS"}:
                         continue
                     candidates.append(
                         {
                             "criterion_id": ev["criterion_id"],
                             "work_unit_id": wu.work_unit_id,
                             "result_ref": wu.selected_result_ref,
-                            "artifact_hash": artifact_hash,
-                            "verdict": ev.get("verdict")
-                            or wu.selected_verdict
-                            or Verdict.PASS,
+                            "artifact_hash": reg.artifact_hash,
+                            "verdict": reg.verdict,
                         }
                     )
             else:
@@ -1994,8 +2235,8 @@ class ApplicationService:
                     {
                         "work_unit_id": wu.work_unit_id,
                         "result_ref": wu.selected_result_ref,
-                        "artifact_hash": wu.verified_artifact_hash,
-                        "verdict": wu.selected_verdict or Verdict.PASS,
+                        "artifact_hash": registered.artifact_hash,
+                        "verdict": registered.verdict,
                     }
                 )
 
@@ -2092,7 +2333,7 @@ class ApplicationService:
             if c.get("required", True)
         ]
         evidence = self._build_acceptance_evidence(
-            session, nodes, required, payload.get("evidence") or []
+            session, task.task_id, nodes, required, payload.get("evidence") or []
         )
         self._assert_acceptance_evidence(required, evidence)
 

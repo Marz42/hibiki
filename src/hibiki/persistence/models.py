@@ -425,6 +425,20 @@ class ResultSnapshotRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ArtifactRow(Base):
+    """Registered delivery evidence — client cannot invent hashes (§20.1)."""
+
+    __tablename__ = "artifacts"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), primary_key=True)
+    artifact_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    work_unit_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AgentProfileRow(Base):
     __tablename__ = "agent_profiles"
 

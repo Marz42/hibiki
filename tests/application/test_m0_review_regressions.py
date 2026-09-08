@@ -607,3 +607,212 @@ def test_p1_inbox_replay_preserves_failure(tmp_path):
     assert r2.replayed
     assert r2.error_code == "dispatch_blocked_state"
     assert r2.error_message == r1.error_message
+
+
+def test_p1_client_extra_evidence_cannot_bypass_fail(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    ua = user_agent_auth()
+    task_id, _ = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run_id,
+        {
+            "outcome": "COMPLETED",
+            "verdict": "FAIL",
+            "artifact_refs": ["failed-hash"],
+        },
+    )
+    prep = svc.execute(
+        "prepare_acceptance",
+        ua,
+        {
+            "task_id": task_id,
+            "evidence": [
+                {
+                    "criterion_id": "c1",
+                    "artifact_hash": "unregistered-hash",
+                    "verdict": "PASS",
+                }
+            ],
+        },
+    )
+    assert not prep.ok
+    assert prep.error_code == "unregistered_artifact"
+    # Registered FAIL hash also cannot be declared PASS by the client
+    prep2 = svc.execute(
+        "prepare_acceptance",
+        human,
+        {
+            "task_id": task_id,
+            "evidence": [
+                {
+                    "criterion_id": "c1",
+                    "artifact_hash": "failed-hash",
+                    "verdict": "PASS",
+                }
+            ],
+        },
+    )
+    assert not prep2.ok
+    assert prep2.error_code in {"evidence_failed", "missing_evidence"}
+    assert svc.get_task(task_id)["state"] != TaskState.COMPLETED
+
+
+def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    r = svc.execute("create_task", human, {"title": "spec"})
+    task_id = r.data["task_id"]
+    r = svc.execute("submit_contract", human, {"task_id": task_id, "objective": "v1"})
+    svc.execute(
+        "approve_contract",
+        human,
+        {
+            "decision_id": r.data["decision_id"],
+            "expected_target_hash": r.data["content_hash"],
+            "expected_target_version": r.data["contract_version"],
+        },
+    )
+    svc.execute(
+        "activate_plan",
+        human,
+        {
+            "task_id": task_id,
+            "objective": "v1-obj",
+            "nodes": [{"work_unit_id": "wu_spec", "spec_version": 1}],
+            "edges": [],
+        },
+    )
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    # In-place definition change while Run is active must be rejected
+    bump = svc.execute(
+        "activate_plan",
+        human,
+        {
+            "task_id": task_id,
+            "expected_plan_version": 1,
+            "objective": "v2-obj-changed",
+            "nodes": [{"work_unit_id": "wu_spec", "spec_version": 2}],
+            "edges": [],
+        },
+    )
+    assert not bump.ok
+    assert bump.error_code == "work_unit_spec_immutable"
+    # New Work Unit for the new definition; old Run result is history only
+    svc.execute(
+        "activate_plan",
+        human,
+        {
+            "task_id": task_id,
+            "expected_plan_version": 1,
+            "objective": "v2-obj-changed",
+            "nodes": [{"work_unit_id": "wu_spec_v2", "spec_version": 1}],
+            "edges": [],
+        },
+    )
+    late = svc.execute(
+        "submit_result",
+        human,
+        {
+            "run_id": run_id,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["old-v1"],
+            },
+        },
+    )
+    assert late.ok
+    assert late.data.get("late_arrival") or late.data.get("accepted_as_history")
+    assert svc.get_work_unit("wu_spec")["status"] == WorkUnitStatus.RUNNING
+    assert svc.get_work_unit("wu_spec_v2")["status"] == WorkUnitStatus.PENDING
+    # DONE terminal must not revive on later plan mention
+    d2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert d2.ok
+    run2 = d2.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run2,
+        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["new-v2"]},
+    )
+    assert svc.get_work_unit("wu_spec_v2")["status"] == WorkUnitStatus.DONE
+    revive = svc.execute(
+        "activate_plan",
+        human,
+        {
+            "task_id": task_id,
+            "expected_plan_version": 2,
+            "nodes": [
+                {"work_unit_id": "wu_spec_v2", "spec_version": 2},
+            ],
+            "edges": [],
+        },
+    )
+    assert not revive.ok
+    assert revive.error_code == "work_unit_spec_immutable"
+    assert svc.get_work_unit("wu_spec_v2")["status"] == WorkUnitStatus.DONE
+
+
+def test_p1_gate_revoke_start_allows_redispatch(tmp_path):
+    svc, ctx = make_core(tmp_path, dispatch_enabled=False)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    assert svc.count_outbox(status=OutboxStatus.PENDING, task_id=task_id) >= 1
+    g = svc.execute("open_blocking_gate", human, {"task_id": task_id, "reason": "hold"})
+    assert svc.get_task(task_id)["state"] == TaskState.WAITING_HUMAN
+    run = next(r for r in svc.list_runs(task_id) if r["run_id"] == run_id)
+    assert run["status"] == AgentRunStatus.CANCELLED
+    assert svc.get_work_unit(wu)["status"] == WorkUnitStatus.PENDING
+    assert svc.get_work_unit(wu)["active_run_id"] is None
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": g.data["decision_id"], "choice": "APPROVE"},
+    )
+    assert svc.get_task(task_id)["state"] == TaskState.EXECUTING
+    svc.dispatch_enabled = True
+    r = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert r.ok
+    assert len(r.data["created_runs"]) == 1
+    assert r.data["created_runs"][0] != run_id
+    assert len(ctx["agent"].started) == 1
+
+
+def test_p1_pause_stops_succeeded_but_alive_executor(tmp_path):
+    svc, ctx = make_core(tmp_path)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    svc.execute(
+        "submit_result",
+        human,
+        {
+            "run_id": run_id,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["alive-hash"],
+            },
+        },
+    )
+    assert ctx["agent"].is_alive(run_id)
+    before_stops = len(ctx["agent"].stopped)
+    # Only Pause — do not mark_dead / confirm_run_exit first
+    r = svc.execute("pause_task", human, {"task_id": task_id})
+    assert r.ok
+    assert len(ctx["agent"].stopped) > before_stops
+    assert any(rid == run_id for rid, _ in ctx["agent"].stopped)
+    assert not ctx["agent"].is_alive(run_id)
+    q = svc.execute("runtime_quiescent", human, {"task_id": task_id})
+    assert q.ok
+    assert svc.get_task(task_id)["state"] == TaskState.PAUSED
+    _ = wu
