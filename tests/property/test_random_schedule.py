@@ -11,7 +11,7 @@ import random
 from collections import Counter
 
 from hibiki.domain.enums import DecisionStatus, TaskState
-from tests.helpers import human_auth, make_core, user_agent_auth
+from tests.helpers import human_auth, internal_auth, make_core, user_agent_auth
 
 OPS = (
     "submit_contract",
@@ -75,7 +75,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
             elif known_run_ids:
                 r = _exec(
                     "submit_result",
-                    human,
+                    internal_auth(),
                     {
                         "run_id": known_run_ids[0],
                         "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
@@ -208,7 +208,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 if run["status"] == "RUNNING":
                     _exec(
                         "submit_result",
-                        human,
+                        internal_auth(),
                         {
                             "run_id": run["run_id"],
                             "result": {
@@ -226,7 +226,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 # No running run — still count an illegal/no-op input
                 _exec(
                     "submit_result",
-                    human,
+                    internal_auth(),
                     {"run_id": "run_missing", "result": {"outcome": "COMPLETED"}},
                     message_id=f"sr-miss-{seed}-{step}",
                 )
@@ -252,7 +252,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
         elif op == "late_result" and known_run_ids:
             _exec(
                 "submit_result",
-                human,
+                internal_auth(),
                 {
                     "run_id": known_run_ids[0],
                     "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},

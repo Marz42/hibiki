@@ -64,7 +64,11 @@ def approve_flow(svc, auth, *, title: str = "t1"):
 
 
 def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
-    """Submit business result then confirm executor exit (SPEC §8.2)."""
+    """Submit business result then confirm executor exit (SPEC §8.2).
+
+    Result submission is Internal-only; exit confirm may use the caller auth.
+    """
+    worker = internal_auth(getattr(auth, "principal_id", "human_1"))
     payload_result = result or {
         "outcome": "COMPLETED",
         "verdict": "PASS",
@@ -72,7 +76,7 @@ def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
     }
     r = svc.execute(
         "submit_result",
-        auth,
+        worker,
         {"run_id": run_id, "result": payload_result},
     )
     assert r.ok, r

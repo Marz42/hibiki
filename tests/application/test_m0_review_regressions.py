@@ -17,7 +17,7 @@ from hibiki.domain.enums import (
 )
 from hibiki.persistence.session import InstanceLock
 from hibiki.runtime.fake_external import FakeExternalAdapter
-from tests.helpers import approve_flow, human_auth, make_core, submit_result_and_exit, user_agent_auth
+from tests.helpers import approve_flow, human_auth, internal_auth, make_core, submit_result_and_exit, user_agent_auth
 
 
 class ThrowingOnceExternal(FakeExternalAdapter):
@@ -217,7 +217,7 @@ def test_p1_pause_resume_clears_markers(tmp_path):
     ctx["agent"].mark_dead(run_id)
     svc.execute(
         "set_writer_alive",
-        human,
+        internal_auth(),
         {"workspace_id": f"ws_{wu}", "alive": False},
     )
     r = svc.execute("runtime_quiescent", human, {"task_id": task_id})
@@ -534,7 +534,7 @@ def test_p1_result_does_not_imply_executor_exit(tmp_path):
     run_id = d.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        human,
+        internal_auth(),
         {
             "run_id": run_id,
             "result": {
@@ -717,7 +717,7 @@ def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
     )
     late = svc.execute(
         "submit_result",
-        human,
+        internal_auth(),
         {
             "run_id": run_id,
             "result": {
@@ -729,7 +729,7 @@ def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
     )
     assert late.ok
     assert late.data.get("late_arrival") or late.data.get("accepted_as_history")
-    assert svc.get_work_unit("wu_spec")["status"] == WorkUnitStatus.RUNNING
+    assert svc.get_work_unit("wu_spec")["status"] == WorkUnitStatus.CANCELLED
     assert svc.get_work_unit("wu_spec_v2")["status"] == WorkUnitStatus.PENDING
     # DONE terminal must not revive on later plan mention
     d2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
@@ -757,6 +757,11 @@ def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
     assert not revive.ok
     assert revive.error_code == "work_unit_spec_immutable"
     assert svc.get_work_unit("wu_spec_v2")["status"] == WorkUnitStatus.DONE
+    prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert prep.ok, prep
+    acc = svc.execute("accept_result", human, {"decision_id": prep.data["decision_id"]})
+    assert acc.ok, acc
+    assert svc.get_task(task_id)["state"] == TaskState.COMPLETED
 
 
 def test_p1_gate_revoke_start_allows_redispatch(tmp_path):
@@ -794,7 +799,7 @@ def test_p1_pause_stops_succeeded_but_alive_executor(tmp_path):
     run_id = d.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        human,
+        internal_auth(),
         {
             "run_id": run_id,
             "result": {
@@ -816,3 +821,230 @@ def test_p1_pause_stops_succeeded_but_alive_executor(tmp_path):
     assert q.ok
     assert svc.get_task(task_id)["state"] == TaskState.PAUSED
     _ = wu
+
+
+def test_p0_inflight_start_gate_no_double_writer(tmp_path):
+    """IN_FLIGHT agent.start + Gate must not free Workspace for a second writer."""
+    svc, ctx = make_core(tmp_path, dispatch_enabled=False)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+
+    item = svc.executor.run(svc._claim_one_outbox)
+    assert item is not None
+    assert item["command_type"] == "agent.start"
+    assert svc.count_outbox(status=OutboxStatus.IN_FLIGHT) == 1
+    # Adapter already started; ACK not yet committed
+    ctx["agent"].start(item["payload"])
+    assert ctx["agent"].is_alive(run_id)
+
+    g = svc.execute("open_blocking_gate", human, {"task_id": task_id, "reason": "mid_start"})
+    assert svc.get_task(task_id)["state"] == TaskState.WAITING_HUMAN
+    ws = svc.get_workspace(f"ws_{wu}")
+    assert ws["owner_run_id"] == run_id
+    # First process still the owner — no second dispatch yet
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": g.data["decision_id"], "choice": "APPROVE"},
+    )
+    svc.dispatch_enabled = True
+    r = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    # Cannot create second writer while first still owns workspace
+    assert r.ok
+    assert r.data["created_runs"] == []
+    # Drain stop for fenced start, settle, then redisatch once
+    svc.drain_outbox()
+    assert not ctx["agent"].is_alive(run_id)
+    r2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert r2.ok
+    assert len(r2.data["created_runs"]) == 1
+    assert r2.data["created_runs"][0] != run_id
+    alive = [rid for rid in ctx["agent"].started if ctx["agent"].is_alive(rid)]
+    assert len(alive) <= 1
+
+
+def test_p1_structured_result_same_hash_dual_refs(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    r = svc.execute(
+        "submit_result",
+        internal_auth(),
+        {
+            "run_id": run_id,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["h"],
+                "acceptance_evidence": [
+                    {"criterion_id": "c1", "artifact_hash": "h", "verdict": "PASS"},
+                ],
+            },
+        },
+    )
+    assert r.ok, r
+    svc.execute("confirm_run_exit", human, {"run_id": run_id})
+    prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert prep.ok, prep
+
+
+def test_p1_verify_fail_not_masked_by_prior_pass_artifact(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    r = svc.execute("create_task", human, {"title": "verify"})
+    task_id = r.data["task_id"]
+    r = svc.execute("submit_contract", human, {"task_id": task_id})
+    svc.execute(
+        "approve_contract",
+        human,
+        {
+            "decision_id": r.data["decision_id"],
+            "expected_target_hash": r.data["content_hash"],
+            "expected_target_version": r.data["contract_version"],
+        },
+    )
+    svc.execute(
+        "activate_plan",
+        human,
+        {
+            "task_id": task_id,
+            "nodes": [
+                {"work_unit_id": "wu_exec", "spec_version": 1, "work_type": "EXECUTE"},
+                {"work_unit_id": "wu_verify", "spec_version": 1, "work_type": "VERIFY"},
+            ],
+            "edges": [
+                {
+                    "from_work_unit_id": "wu_exec",
+                    "to_work_unit_id": "wu_verify",
+                    "predicate": "DONE",
+                }
+            ],
+        },
+    )
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    exec_run = d.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        exec_run,
+        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["hashX"]},
+    )
+    d2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    verify_run = d2.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        verify_run,
+        {
+            "outcome": "COMPLETED",
+            "verdict": "FAIL",
+            "artifact_refs": ["hashX"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "hashX", "verdict": "FAIL"}
+            ],
+        },
+    )
+    prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert not prep.ok
+    assert prep.error_code in {"evidence_failed", "missing_evidence"}
+
+
+def test_p1_user_agent_cannot_submit_result(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    ua = user_agent_auth()
+    task_id, _ = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    r = svc.execute(
+        "submit_result",
+        ua,
+        {
+            "run_id": run_id,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["forged"],
+            },
+        },
+    )
+    assert not r.ok
+    assert r.error_code == "authorization_denied"
+    assert svc.list_runs(task_id)[0]["status"] in {
+        AgentRunStatus.CREATED,
+        AgentRunStatus.RUNNING,
+    }
+
+
+def test_p1_worker_bound_gate_then_redispatch(tmp_path):
+    svc, ctx = make_core(tmp_path)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    g = svc.execute(
+        "open_blocking_gate",
+        human,
+        {"task_id": task_id, "reason": "need_info", "run_id": run_id},
+    )
+    assert svc.get_work_unit(wu)["status"] == WorkUnitStatus.BLOCKED
+    assert svc.get_work_unit(wu)["active_run_id"] is None
+    svc.drain_outbox()
+    svc.execute("confirm_run_exit", human, {"run_id": run_id})
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": g.data["decision_id"], "choice": "APPROVE"},
+    )
+    assert svc.get_task(task_id)["state"] == TaskState.EXECUTING
+    assert svc.get_work_unit(wu)["status"] == WorkUnitStatus.PENDING
+    r = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert r.ok
+    assert len(r.data["created_runs"]) == 1
+    assert r.data["created_runs"][0] != run_id
+
+
+def test_p1_contract_delta_stays_pending_apply(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    assert svc.get_task(task_id)["model_call_limit"] == 200
+    gen = svc.execute("replace_planner_generation", human, {"task_id": task_id}).data[
+        "generation"
+    ]
+    r = svc.execute(
+        "submit_plan_proposal",
+        human,
+        {
+            "task_id": task_id,
+            "generation": gen,
+            "changes_authorization": True,
+            "delta": {"resource_limits": {"model_call_limit": 500}},
+            "nodes": [{"work_unit_id": "wu_x", "spec_version": 1}],
+            "edges": [],
+        },
+    )
+    assert r.ok
+    decision_id = r.data["decision_id"]
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": decision_id, "choice": "APPROVE"},
+    )
+    # Approved but not applied
+    assert svc.get_task(task_id)["state"] == TaskState.WAITING_HUMAN
+    assert svc.get_task(task_id)["contract_version"] == 1
+    assert svc.get_task(task_id)["model_call_limit"] == 200
+    dec = svc.get_decision(decision_id)
+    assert dec["status"] == "APPROVED"
+    # Explicit apply after writers drained
+    applied = svc.execute(
+        "apply_contract_delta", human, {"decision_id": decision_id}
+    )
+    assert applied.ok, applied
+    assert svc.get_task(task_id)["contract_version"] == 2
+    assert svc.get_task(task_id)["model_call_limit"] == 500

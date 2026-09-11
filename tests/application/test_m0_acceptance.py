@@ -293,7 +293,7 @@ def test_h010_late_result_does_not_overwrite(tmp_path):
     assert run2 != run1
     r = svc.execute(
         "submit_result",
-        auth,
+        internal_auth(),
         {"run_id": run1, "result": {"outcome": "COMPLETED", "summary": "late"}},
     )
     assert r.ok
@@ -379,7 +379,7 @@ def test_h013_verify_fail_blocks_verdict_pass_dep(tmp_path):
     run_id = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        auth,
+        internal_auth(),
         {
             "run_id": run_id,
             "result": {
@@ -427,7 +427,7 @@ def test_h015_unrelated_plan_bump_keeps_valid_result(tmp_path):
     run_id = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        auth,
+        internal_auth(),
         {"run_id": run_id, "result": {"outcome": "COMPLETED", "verdict": "PASS"}},
     )
     assert svc.get_work_unit(wu)["status"] == WorkUnitStatus.DONE
@@ -487,7 +487,7 @@ def test_h016_upstream_hash_change_invalidates_pass(tmp_path):
     run_id = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        auth,
+        internal_auth(),
         {
             "run_id": run_id,
             "result": {
@@ -534,7 +534,7 @@ def test_h017_no_completed_without_acceptance(tmp_path):
     r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
     svc.execute(
         "submit_result",
-        auth,
+        internal_auth(),
         {"run_id": r.data["created_runs"][0], "result": {"outcome": "COMPLETED"}},
     )
     assert svc.get_task(task_id)["state"] != TaskState.COMPLETED
@@ -575,7 +575,7 @@ def test_h019_lease_expired_writer_alive_quarantine(tmp_path):
     # stop via cancel path simulating lease recovery
     svc.execute(
         "set_writer_alive",
-        auth,
+        internal_auth(),
         {"workspace_id": f"ws_{wu}", "alive": True, "quarantine": True},
     )
     ws = svc.get_workspace(f"ws_{wu}")

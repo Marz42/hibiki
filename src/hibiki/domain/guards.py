@@ -12,10 +12,20 @@ HUMAN_ONLY_OPS = frozenset(
         "resolve_decision",
         "accept_result",
         "resume_task",
+        "apply_contract_delta",
     }
 )
 
 INTERRUPT_OPS = frozenset({"pause_task", "cancel_task"})
+
+# Executor / run-bound writes — not callable by User Agent or unaudited Human UI
+INTERNAL_ONLY_OPS = frozenset(
+    {
+        "submit_result",
+        "set_writer_alive",
+        "heartbeat",
+    }
+)
 
 HUMAN_DECISION_KINDS = frozenset(
     {
@@ -35,6 +45,14 @@ def require_human(auth: AuthContext, operation: str) -> None:
         )
 
 
+def require_internal(auth: AuthContext, operation: str) -> None:
+    if auth.actor_type != ActorType.INTERNAL:
+        raise AuthorizationError(
+            f"operation {operation!r} requires Internal actor; got {auth.actor_type}",
+            code="authorization_denied",
+        )
+
+
 def require_interrupt_scope(auth: AuthContext, operation: str) -> None:
     if auth.is_human():
         return
@@ -50,6 +68,8 @@ def guard_operation(auth: AuthContext, operation: str) -> None:
         require_human(auth, operation)
     elif operation in INTERRUPT_OPS:
         require_interrupt_scope(auth, operation)
+    elif operation in INTERNAL_ONLY_OPS:
+        require_internal(auth, operation)
 
 
 def guard_human_decision(auth: AuthContext, kind: DecisionKind | str) -> None:

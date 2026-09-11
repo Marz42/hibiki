@@ -136,6 +136,7 @@ class DecisionRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     gate_lifecycle: Mapped[str] = mapped_column(String(32), nullable=False, default="OPEN")
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class GateRow(Base):
@@ -426,7 +427,7 @@ class ResultSnapshotRow(Base):
 
 
 class ArtifactRow(Base):
-    """Registered delivery evidence — client cannot invent hashes (§20.1)."""
+    """Registered delivery content identity — not a verification verdict (§20.1)."""
 
     __tablename__ = "artifacts"
 
@@ -435,8 +436,34 @@ class ArtifactRow(Base):
     work_unit_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Legacy column; acceptance must use AcceptanceEvidenceRow, not this field.
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AcceptanceEvidenceRow(Base):
+    """Per-criterion verification evidence bound to a Result / Artifact hash."""
+
+    __tablename__ = "acceptance_evidence_records"
+
+    evidence_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), nullable=False, index=True)
+    criterion_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    work_unit_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "run_id",
+            "criterion_id",
+            name="uq_acceptance_evidence_run_criterion",
+        ),
+    )
 
 
 class AgentProfileRow(Base):

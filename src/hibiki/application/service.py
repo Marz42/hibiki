@@ -53,6 +53,7 @@ from hibiki.domain.transitions import (
 )
 from hibiki.domain.types import AuthContext, CommandResult
 from hibiki.persistence.models import (
+    AcceptanceEvidenceRow,
     ActiveContractMarker,
     ActiveExecuteRunMarker,
     ActivePlanMarker,
@@ -303,6 +304,7 @@ class ApplicationService:
             "seed_profile": self._seed_profile,
             "replace_planner_generation": self._replace_planner_generation,
             "submit_plan_proposal": self._submit_plan_proposal,
+            "apply_contract_delta": self._apply_contract_delta,
         }
         handler = handlers.get(operation)
         if handler is None:
@@ -541,6 +543,18 @@ class ApplicationService:
             return
         if task.cancel_intent or is_terminal_task(TaskState(task.state)):
             return
+        # Clear gate-blocked work units so redisatch can create a new Run (§7.3)
+        for wu in session.scalars(
+            select(WorkUnitExecutionRow).where(
+                WorkUnitExecutionRow.task_id == task.task_id,
+                WorkUnitExecutionRow.status == WorkUnitStatus.BLOCKED,
+            )
+        ):
+            if wu.blocked_reason in {"paused", "attempts_exhausted"}:
+                continue
+            wu.status = transition_work_unit(WorkUnitStatus.BLOCKED, "block.cleared")
+            wu.blocked_reason = None
+            wu.active_run_id = None
         self._set_task_state(session, task, "decision.resolved")
 
     def _clear_run_occupancy(
@@ -1070,6 +1084,18 @@ class ApplicationService:
                 raise ConflictError(
                     "acceptance snapshot plan stale", code="snapshot_stale"
                 )
+            # Current-plan work units must be DONE; historical removed nodes are CANCELLED
+            plan_marker = session.get(ActivePlanMarker, task.task_id)
+            current_ids: set[str] = set()
+            if plan_marker is not None:
+                plan = session.scalars(
+                    select(PlanRow).where(
+                        PlanRow.task_id == task.task_id,
+                        PlanRow.plan_version == plan_marker.plan_version,
+                    )
+                ).first()
+                if plan is not None:
+                    current_ids = {n["work_unit_id"] for n in json.loads(plan.nodes_json)}
             pending_wu = session.scalars(
                 select(WorkUnitExecutionRow).where(
                     WorkUnitExecutionRow.task_id == task.task_id,
@@ -1082,7 +1108,12 @@ class ApplicationService:
                     ),
                 )
             ).all()
-            if pending_wu:
+            blockers = [
+                wu
+                for wu in pending_wu
+                if not current_ids or wu.work_unit_id in current_ids
+            ]
+            if blockers:
                 raise PreconditionError(
                     "incomplete work units block acceptance",
                     code="incomplete_work",
@@ -1160,6 +1191,28 @@ class ApplicationService:
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
             self._recompute_runnable_state(session, task)
+        elif kind == DecisionKind.CONTRACT_DELTA:
+            # Approve records immutable Decision; Gate stays APPROVED_PENDING_APPLY
+            # until apply_contract_delta activates the new Contract (§6.3).
+            if not decision.payload_json:
+                raise PreconditionError(
+                    "contract delta payload missing", code="delta_payload_missing"
+                )
+            for gate in session.scalars(
+                select(GateRow).where(GateRow.decision_id == decision.decision_id)
+            ):
+                gate.lifecycle = GateLifecycle.APPROVED_PENDING_APPLY
+            decision.gate_lifecycle = GateLifecycle.APPROVED_PENDING_APPLY
+            # Keep Task in WAITING_HUMAN — do not pretend authorization is applied
+            if TaskState(task.state) != TaskState.WAITING_HUMAN:
+                self._set_task_state(
+                    session,
+                    task,
+                    "blocking_gate.opened",
+                    reason=WaitingReason.CONTRACT_DELTA,
+                )
+            else:
+                task.state_reason = WaitingReason.CONTRACT_DELTA
         else:
             for gate in session.scalars(
                 select(GateRow).where(GateRow.decision_id == decision.decision_id)
@@ -1167,6 +1220,7 @@ class ApplicationService:
                 gate.lifecycle = GateLifecycle.RESOLVED
                 gate.resolved_at = now
             self._recompute_runnable_state(session, task)
+
     def _activate_minimal_plan(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
@@ -1365,6 +1419,56 @@ class ApplicationService:
                 raise PreconditionError(
                     "workspace belongs to another task", code="cross_task_workspace"
                 )
+
+        # Plan removal: tear down Work Units no longer in the active node set (§6)
+        keep_ids = {n.work_unit_id for n in nodes}
+        for orphan in session.scalars(
+            select(WorkUnitExecutionRow).where(WorkUnitExecutionRow.task_id == task.task_id)
+        ):
+            if orphan.work_unit_id in keep_ids:
+                continue
+            if is_terminal_work_unit(WorkUnitStatus(orphan.status)):
+                continue
+            if orphan.status == WorkUnitStatus.PENDING:
+                orphan.status = WorkUnitStatus.CANCELLED
+                orphan.blocked_reason = "removed_from_plan"
+                orphan.active_run_id = None
+                continue
+            # RUNNING / BLOCKED: stop live runs and cancel the unit
+            if orphan.active_run_id:
+                run = session.get(AgentRunRow, orphan.active_run_id)
+                if run and run.status in {
+                    AgentRunStatus.CREATED,
+                    AgentRunStatus.RUNNING,
+                }:
+                    self._enqueue_stops_for_runs(
+                        session, task, [run.run_id], reason="removed_from_plan"
+                    )
+                    if run.status == AgentRunStatus.CREATED:
+                        # Prefer cancelling unsent; IN_FLIGHT handled by invalidate/stop
+                        pending_start = session.scalars(
+                            select(OutboxRow).where(
+                                OutboxRow.task_id == task.task_id,
+                                OutboxRow.command_type == "agent.start",
+                                OutboxRow.status == OutboxStatus.PENDING,
+                            )
+                        ).all()
+                        for ob in pending_start:
+                            pl = json.loads(ob.payload_json)
+                            if pl.get("run_id") == run.run_id:
+                                ob.status = OutboxStatus.DEAD
+                                run.status = AgentRunStatus.CANCELLED
+                                run.finished_at = now
+                                run.terminal_reason = "removed_from_plan"
+                                self._clear_run_occupancy(
+                                    session, run, release_workspace=True
+                                )
+            orphan.status = WorkUnitStatus.CANCELLED
+            orphan.blocked_reason = "removed_from_plan"
+            orphan.active_run_id = None
+            marker = session.get(ActiveExecuteRunMarker, orphan.work_unit_id)
+            if marker:
+                session.delete(marker)
 
         if task.state in {TaskState.PLANNING, TaskState.EXECUTING, TaskState.VERIFYING}:
             if task.state != TaskState.EXECUTING:
@@ -1766,43 +1870,68 @@ class ApplicationService:
         *,
         apply_to_work_unit: bool,
     ) -> None:
-        refs = result.get("verified_artifact_refs") or result.get("artifact_refs") or []
-        verdict = result.get("verdict")
+        """Register content hashes once; store criterion verdicts separately."""
         now = self.clock.now()
+        hashes: list[str] = []
+        refs = result.get("verified_artifact_refs") or result.get("artifact_refs") or []
         for ref in refs:
             artifact_hash = ref if isinstance(ref, str) else (ref or {}).get("hash")
-            if not artifact_hash:
+            if artifact_hash:
+                hashes.append(str(artifact_hash))
+        evidence_items = list(result.get("acceptance_evidence") or [])
+        for ev in evidence_items:
+            artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
+            if artifact_hash:
+                hashes.append(str(artifact_hash))
+        # Dedupe within this Result before insert (autoflush=False)
+        seen: set[str] = set()
+        for artifact_hash in hashes:
+            if artifact_hash in seen:
                 continue
-            existing = session.get(ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash})
+            seen.add(artifact_hash)
+            existing = session.get(
+                ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash}
+            )
             if existing is None:
                 session.add(
                     ArtifactRow(
                         task_id=task_id,
-                        artifact_hash=str(artifact_hash),
+                        artifact_hash=artifact_hash,
                         work_unit_id=run.work_unit_id,
                         run_id=run.run_id,
                         result_ref=run.result_ref,
-                        verdict=verdict,
+                        verdict=None,
                         created_at=now,
                     )
                 )
-            elif apply_to_work_unit and existing.verdict is None and verdict is not None:
-                existing.verdict = verdict
-        # Structured acceptance_evidence artifacts
-        for ev in result.get("acceptance_evidence") or []:
+        session.flush()
+        if not apply_to_work_unit:
+            return
+        for ev in evidence_items:
+            cid = ev.get("criterion_id")
             artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
-            if not artifact_hash:
+            verdict = ev.get("verdict")
+            if not cid or not artifact_hash or not verdict:
                 continue
-            existing = session.get(ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash})
-            if existing is None:
+            self._resolve_registered_artifact(session, task_id, str(artifact_hash))
+            existing_ev = session.scalars(
+                select(AcceptanceEvidenceRow).where(
+                    AcceptanceEvidenceRow.task_id == task_id,
+                    AcceptanceEvidenceRow.run_id == run.run_id,
+                    AcceptanceEvidenceRow.criterion_id == str(cid),
+                )
+            ).first()
+            if existing_ev is None:
                 session.add(
-                    ArtifactRow(
+                    AcceptanceEvidenceRow(
+                        evidence_id=new_id("aev"),
                         task_id=task_id,
+                        criterion_id=str(cid),
                         artifact_hash=str(artifact_hash),
                         work_unit_id=run.work_unit_id,
                         run_id=run.run_id,
                         result_ref=run.result_ref,
-                        verdict=ev.get("verdict") or verdict,
+                        verdict=str(verdict),
                         created_at=now,
                     )
                 )
@@ -1995,7 +2124,13 @@ class ApplicationService:
         return CommandResult.success({"task_id": task.task_id, "state": task.state})
 
     def _invalidate_pending_outbox(self, session: Session, task: TaskRow) -> None:
-        """Revoke unsent starts and unsent external dispatches on pause/cancel."""
+        """Revoke unsent starts and unsent external dispatches on pause/cancel/gate.
+
+        PENDING agent.start: confirmed unsent — CANCEL CREATED and free Workspace.
+        IN_FLIGHT agent.start: start may already have reached the Adapter — keep
+        occupancy, enqueue stop, never release writer solely because Run is CREATED.
+        """
+        inflight_start_runs: list[str] = []
         for ob in session.scalars(
             select(OutboxRow).where(
                 OutboxRow.task_id == task.task_id,
@@ -2015,14 +2150,33 @@ class ApplicationService:
                 ob.status = OutboxStatus.ACKED
                 ob.acked_at = self.clock.now()
                 continue
+
+            if (
+                ob.status == OutboxStatus.IN_FLIGHT
+                and ob.command_type == "agent.start"
+            ):
+                payload = json.loads(ob.payload_json)
+                run_id = payload.get("run_id")
+                ob.status = OutboxStatus.DEAD
+                ob.revoke_epoch = task.revoke_epoch
+                if run_id:
+                    inflight_start_runs.append(run_id)
+                    run = session.get(AgentRunRow, run_id)
+                    # Do not CANCELLED+release: process may already be live.
+                    # Keep CREATED/RUNNING occupancy until stop confirms exit.
+                    if run is not None and run.workspace_id:
+                        ws = session.get(WorkspaceRow, run.workspace_id)
+                        if ws and ws.owner_run_id == run.run_id:
+                            ws.writer_alive = True
+                continue
+
             ob.status = OutboxStatus.DEAD
             ob.revoke_epoch = task.revoke_epoch
             if ob.command_type == "agent.start":
                 payload = json.loads(ob.payload_json)
                 run = session.get(AgentRunRow, payload.get("run_id"))
                 if run is not None and run.status == AgentRunStatus.CREATED:
-                    # Revoke unsent start and free occupancy so a later dispatch
-                    # can create a new Run after the Gate/pause clears.
+                    # Confirmed unsent — free occupancy for later redisatch
                     run.status = AgentRunStatus.CANCELLED
                     run.finished_at = self.clock.now()
                     run.terminal_reason = "start_revoked"
@@ -2037,11 +2191,15 @@ class ApplicationService:
                 payload = json.loads(ob.payload_json)
                 effect = session.get(SideEffectRow, payload.get("effect_id"))
                 if effect and effect.state == SideEffectState.DISPATCHING:
-                    # Never sent — do not leave DISPATCHING stuck without outbox
                     if task.cancel_intent:
                         effect.state = SideEffectState.CANCELLED
                     else:
                         effect.state = SideEffectState.AUTHORIZED
+
+        if inflight_start_runs:
+            self._enqueue_stops_for_runs(
+                session, task, inflight_start_runs, reason="start_inflight_revoked"
+            )
 
     def _invalidate_pending_starts(self, session: Session, task: TaskRow) -> None:
         self._invalidate_pending_outbox(session, task)
@@ -2065,7 +2223,14 @@ class ApplicationService:
                 selected[run.run_id] = run
         return list(selected.values())
 
-    def _enqueue_stops(self, session: Session, task: TaskRow, *, reason: str) -> None:
+    def _enqueue_stops_for_runs(
+        self,
+        session: Session,
+        task: TaskRow,
+        run_ids: list[str],
+        *,
+        reason: str,
+    ) -> None:
         now = self.clock.now()
         pending_stops = {
             json.loads(ob.payload_json).get("run_id")
@@ -2077,22 +2242,26 @@ class ApplicationService:
                 )
             )
         }
-        for run in self._runs_requiring_stop(session, task.task_id):
-            if run.run_id in pending_stops:
+        for run_id in run_ids:
+            if run_id in pending_stops:
                 continue
             session.add(
                 OutboxRow(
                     outbox_id=new_id("ob"),
                     task_id=task.task_id,
                     command_type="agent.stop",
-                    payload_json=canonical_json(
-                        {"run_id": run.run_id, "reason": reason}
-                    ),
+                    payload_json=canonical_json({"run_id": run_id, "reason": reason}),
                     status=OutboxStatus.PENDING,
                     revoke_epoch=task.revoke_epoch,
                     created_at=now,
                 )
             )
+
+    def _enqueue_stops(self, session: Session, task: TaskRow, *, reason: str) -> None:
+        runs = self._runs_requiring_stop(session, task.task_id)
+        self._enqueue_stops_for_runs(
+            session, task, [r.run_id for r in runs], reason=reason
+        )
 
     def _assert_acceptance_evidence(
         self, required: list[dict[str, Any]], evidence: list[dict[str, Any]]
@@ -2142,6 +2311,23 @@ class ApplicationService:
             )
         return row
 
+    def _latest_criterion_evidence(
+        self, session: Session, task_id: str, criterion_id: str, wu_ids: set[str]
+    ) -> AcceptanceEvidenceRow | None:
+        rows = session.scalars(
+            select(AcceptanceEvidenceRow)
+            .where(
+                AcceptanceEvidenceRow.task_id == task_id,
+                AcceptanceEvidenceRow.criterion_id == criterion_id,
+            )
+            .order_by(AcceptanceEvidenceRow.created_at.desc())
+        ).all()
+        for row in rows:
+            if row.work_unit_id and row.work_unit_id not in wu_ids:
+                continue
+            return row
+        return None
+
     def _build_acceptance_evidence(
         self,
         session: Session,
@@ -2150,7 +2336,7 @@ class ApplicationService:
         required: list[dict[str, Any]],
         extra_evidence: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Map criteria only via Core-registered artifacts; never trust client PASS."""
+        """Map criteria via evidence records; Artifact hash is identity only."""
         evidence: list[dict[str, Any]] = []
         current_wu_ids = {n["work_unit_id"] for n in nodes}
 
@@ -2162,10 +2348,23 @@ class ApplicationService:
                     "extra evidence requires criterion_id and artifact_hash",
                     code="missing_evidence",
                 )
-            registered = self._resolve_registered_artifact(
-                session, task_id, str(artifact_hash)
-            )
-            if registered.work_unit_id and registered.work_unit_id not in current_wu_ids:
+            self._resolve_registered_artifact(session, task_id, str(artifact_hash))
+            # Client cannot supply verdict — look up registered evidence for this hash
+            ev_row = session.scalars(
+                select(AcceptanceEvidenceRow)
+                .where(
+                    AcceptanceEvidenceRow.task_id == task_id,
+                    AcceptanceEvidenceRow.criterion_id == str(cid),
+                    AcceptanceEvidenceRow.artifact_hash == str(artifact_hash),
+                )
+                .order_by(AcceptanceEvidenceRow.created_at.desc())
+            ).first()
+            if ev_row is None:
+                raise PreconditionError(
+                    f"no verification evidence for criterion {cid} / {artifact_hash}",
+                    code="missing_evidence",
+                )
+            if ev_row.work_unit_id and ev_row.work_unit_id not in current_wu_ids:
                 raise PreconditionError(
                     f"artifact {artifact_hash} is not from the current plan deliverables",
                     code="evidence_not_current",
@@ -2173,101 +2372,60 @@ class ApplicationService:
             evidence.append(
                 {
                     "criterion_id": str(cid),
-                    "work_unit_id": registered.work_unit_id,
-                    "result_ref": registered.result_ref,
-                    "artifact_hash": registered.artifact_hash,
-                    "verdict": registered.verdict,
-                    "run_id": registered.run_id,
+                    "work_unit_id": ev_row.work_unit_id,
+                    "result_ref": ev_row.result_ref,
+                    "artifact_hash": ev_row.artifact_hash,
+                    "verdict": ev_row.verdict,
+                    "run_id": ev_row.run_id,
                 }
             )
-
-        candidates: list[dict[str, Any]] = []
-        for node in nodes:
-            wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
-            assert wu is not None
-            if wu.selected_verdict not in {Verdict.PASS, "PASS"}:
-                continue
-            if not wu.verified_artifact_hash:
-                continue
-            registered = session.get(
-                ArtifactRow,
-                {
-                    "task_id": task_id,
-                    "artifact_hash": wu.verified_artifact_hash,
-                },
-            )
-            if registered is None or registered.verdict not in {Verdict.PASS, "PASS"}:
-                continue
-            run_evidence: list[dict[str, Any]] = []
-            if wu.selected_result_ref:
-                for run in session.scalars(
-                    select(AgentRunRow).where(
-                        AgentRunRow.work_unit_id == wu.work_unit_id,
-                        AgentRunRow.result_ref == wu.selected_result_ref,
-                    )
-                ):
-                    result = json.loads(run.result_json or "{}")
-                    for ev in result.get("acceptance_evidence") or []:
-                        run_evidence.append(ev)
-            if run_evidence:
-                for ev in run_evidence:
-                    if not ev.get("criterion_id"):
-                        continue
-                    artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
-                    if not artifact_hash:
-                        continue
-                    reg = self._resolve_registered_artifact(
-                        session, task_id, str(artifact_hash)
-                    )
-                    if reg.verdict not in {Verdict.PASS, "PASS"}:
-                        continue
-                    candidates.append(
-                        {
-                            "criterion_id": ev["criterion_id"],
-                            "work_unit_id": wu.work_unit_id,
-                            "result_ref": wu.selected_result_ref,
-                            "artifact_hash": reg.artifact_hash,
-                            "verdict": reg.verdict,
-                        }
-                    )
-            else:
-                candidates.append(
-                    {
-                        "work_unit_id": wu.work_unit_id,
-                        "result_ref": wu.selected_result_ref,
-                        "artifact_hash": registered.artifact_hash,
-                        "verdict": registered.verdict,
-                    }
-                )
 
         covered = {str(e["criterion_id"]) for e in evidence if e.get("criterion_id")}
         for crit in required:
             cid = str(crit["criterion_id"])
             if cid in covered:
                 continue
-            idx = next(
-                (
-                    i
-                    for i, e in enumerate(candidates)
-                    if e.get("criterion_id") == cid and e.get("artifact_hash")
-                ),
-                None,
+            # Prefer structured evidence records from current-plan work units
+            ev_row = self._latest_criterion_evidence(
+                session, task_id, cid, current_wu_ids
             )
-            if idx is None:
-                idx = next(
-                    (
-                        i
-                        for i, e in enumerate(candidates)
-                        if not e.get("criterion_id") and e.get("artifact_hash")
-                    ),
-                    None,
+            if ev_row is not None:
+                evidence.append(
+                    {
+                        "criterion_id": cid,
+                        "work_unit_id": ev_row.work_unit_id,
+                        "result_ref": ev_row.result_ref,
+                        "artifact_hash": ev_row.artifact_hash,
+                        "verdict": ev_row.verdict,
+                        "run_id": ev_row.run_id,
+                    }
                 )
-            if idx is None:
+                covered.add(cid)
                 continue
-            item = dict(candidates.pop(idx))
-            item["criterion_id"] = cid
-            evidence.append(item)
-            covered.add(cid)
+            # Fallback: current-plan DONE WU with explicit PASS + registered hash
+            # only when no FAIL evidence exists for the criterion
+            for node in nodes:
+                wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
+                if wu is None or wu.status != WorkUnitStatus.DONE:
+                    continue
+                if wu.selected_verdict not in {Verdict.PASS, "PASS"}:
+                    continue
+                if not wu.verified_artifact_hash:
+                    continue
+                self._resolve_registered_artifact(
+                    session, task_id, wu.verified_artifact_hash
+                )
+                evidence.append(
+                    {
+                        "criterion_id": cid,
+                        "work_unit_id": wu.work_unit_id,
+                        "result_ref": wu.selected_result_ref,
+                        "artifact_hash": wu.verified_artifact_hash,
+                        "verdict": wu.selected_verdict,
+                    }
+                )
+                covered.add(cid)
+                break
         return evidence
 
     def _prepare_acceptance(
@@ -2692,12 +2850,20 @@ class ApplicationService:
                 if wu and wu.status == WorkUnitStatus.RUNNING:
                     wu.status = WorkUnitStatus.BLOCKED
                     wu.blocked_reason = reason
+                    wu.active_run_id = None
+                marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
+                if marker and marker.run_id == run.run_id:
+                    session.delete(marker)
                 if run.status == AgentRunStatus.RUNNING:
                     run.status = AgentRunStatus.SUCCEEDED
                     run.result_json = canonical_json(
                         {"outcome": "BLOCKED", "blockers": [reason]}
                     )
                     run.finished_at = now
+                # Keep Workspace until exit confirm; enqueue stop for live writer
+                self._enqueue_stops_for_runs(
+                    session, task, [run.run_id], reason="blocking_gate"
+                )
         self._set_task_state(
             session,
             task,
@@ -2909,9 +3075,10 @@ class ApplicationService:
             )
         # Check if proposal tries to change authorization fields
         if payload.get("changes_authorization"):
-            # Must go to contract delta
+            # Must go to contract delta — persist immutable target payload
             now = self.clock.now()
             decision_id = new_id("dec")
+            delta = payload.get("delta") or {}
             session.add(
                 DecisionRow(
                     decision_id=decision_id,
@@ -2919,7 +3086,8 @@ class ApplicationService:
                     decision_kind=DecisionKind.CONTRACT_DELTA,
                     target_ref="delta",
                     target_version=(task.contract_version or 0) + 1,
-                    target_hash=content_hash(payload.get("delta") or {}),
+                    target_hash=content_hash(delta),
+                    payload_json=canonical_json(delta),
                     status=DecisionStatus.PENDING,
                     created_at=now,
                     expires_at=now + timedelta(hours=DEFAULTS.decision_ttl_hours),
@@ -2950,6 +3118,123 @@ class ApplicationService:
                 }
             )
         return self._activate_plan(session, auth, payload)
+
+    def _apply_contract_delta(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Activate an approved Contract Delta after writers are drained (§6.3)."""
+        decision = session.get(DecisionRow, payload["decision_id"])
+        if decision is None:
+            raise NotFoundError("decision not found", code="decision_not_found")
+        if decision.decision_kind != DecisionKind.CONTRACT_DELTA:
+            raise PreconditionError("not a contract delta", code="invalid_decision_kind")
+        if decision.status != DecisionStatus.APPROVED:
+            raise PreconditionError(
+                "delta decision not approved", code="decision_not_approved"
+            )
+        task = self._get_task(session, decision.task_id)
+        if task.principal_id != auth.principal_id:
+            raise AuthorizationError(
+                "decision principal mismatch", code="authorization_denied"
+            )
+        gates = list(
+            session.scalars(
+                select(GateRow).where(GateRow.decision_id == decision.decision_id)
+            )
+        )
+        if not any(g.lifecycle == GateLifecycle.APPROVED_PENDING_APPLY for g in gates):
+            raise PreconditionError(
+                "delta gate not awaiting apply", code="delta_not_pending_apply"
+            )
+        self._assert_no_live_writers(session, task.task_id)
+        if not decision.payload_json:
+            raise PreconditionError(
+                "contract delta payload missing", code="delta_payload_missing"
+            )
+        delta = json.loads(decision.payload_json)
+        active = self._active_contract(session, task.task_id)
+        if active is None:
+            raise PreconditionError("no active contract", code="no_active_contract")
+        base = json.loads(active.content_json)
+        # Merge resource_limits and other known fields from delta
+        merged = dict(base)
+        if "resource_limits" in delta:
+            limits = dict(merged.get("resource_limits") or {})
+            limits.update(delta["resource_limits"] or {})
+            merged["resource_limits"] = limits
+        for key in (
+            "objective",
+            "in_scope",
+            "out_of_scope",
+            "constraints",
+            "assumptions",
+            "deliverables",
+            "acceptance_criteria",
+            "allowed_side_effects",
+            "permission_ceiling",
+            "human_gates",
+        ):
+            if key in delta:
+                merged[key] = delta[key]
+        now = self.clock.now()
+        version = int(decision.target_version)
+        ch = content_hash(merged)
+        if ch != decision.target_hash and decision.target_hash != content_hash(
+            json.loads(decision.payload_json)
+        ):
+            # target_hash was over the delta object at propose time; re-hash merged
+            pass
+        # Supersede previous active
+        prev = session.get(ActiveContractMarker, task.task_id)
+        if prev:
+            old = session.scalars(
+                select(ContractRow).where(
+                    ContractRow.task_id == task.task_id,
+                    ContractRow.contract_version == prev.contract_version,
+                )
+            ).first()
+            if old:
+                old.status = ContractStatus.SUPERSEDED
+            session.delete(prev)
+        session.add(
+            ContractRow(
+                task_id=task.task_id,
+                contract_version=version,
+                supersedes_version=task.contract_version,
+                content_hash=ch,
+                content_json=canonical_json(merged),
+                status=ContractStatus.ACTIVE,
+                created_at=now,
+                approved_by=decision.decided_by_actor,
+                approved_at=now,
+            )
+        )
+        session.add(ActiveContractMarker(task_id=task.task_id, contract_version=version))
+        task.contract_version = version
+        limits = merged.get("resource_limits") or {}
+        if "model_call_limit" in limits:
+            task.model_call_limit = int(limits["model_call_limit"])
+        for gate in gates:
+            gate.lifecycle = GateLifecycle.RESOLVED
+            gate.resolved_at = now
+        decision.gate_lifecycle = GateLifecycle.RESOLVED
+        self._recompute_runnable_state(session, task)
+        self._append_event(
+            session,
+            task.task_id,
+            "contract.delta_applied",
+            auth_actor=auth.actor_id,
+            payload={"decision_id": decision.decision_id, "contract_version": version},
+        )
+        return CommandResult.success(
+            {
+                "task_id": task.task_id,
+                "contract_version": version,
+                "decision_id": decision.decision_id,
+                "state": task.state,
+                "model_call_limit": task.model_call_limit,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Outbox
@@ -3048,7 +3333,9 @@ class ApplicationService:
             if ctype == "agent.start":
                 self.agent_adapter.start(payload)
                 self.executor.run(
-                    lambda s: self._ack_outbox_and_mark_running(s, item["outbox_id"], payload)
+                    lambda s: self._ack_outbox_and_mark_running(
+                        s, item["outbox_id"], payload
+                    )
                 )
             elif ctype == "agent.stop":
                 result = self.agent_adapter.stop(payload["run_id"], payload.get("reason") or "stop")
@@ -3091,6 +3378,8 @@ class ApplicationService:
             return
         # agent.start: bounded backoff via DEAD after repeated fails — keep PENDING
         # with future lease so drain doesn't tight-loop
+        if row.status == OutboxStatus.DEAD:
+            return
         row.status = OutboxStatus.PENDING
         row.leased_until = self.clock.now() + timedelta(seconds=DEFAULTS.retry_backoff_seconds[0])
 
@@ -3098,10 +3387,49 @@ class ApplicationService:
         self, session: Session, outbox_id: str, payload: dict[str, Any]
     ) -> None:
         row = session.get(OutboxRow, outbox_id)
+        run = session.get(AgentRunRow, payload["run_id"])
+        task = session.get(TaskRow, run.task_id) if run else None
+
+        # Fence: revoked / DEAD outbox or control freeze must not promote Run.
+        revoked = (
+            row is None
+            or row.status == OutboxStatus.DEAD
+            or (
+                task is not None
+                and (
+                    task.cancel_intent
+                    or task.pause_intent
+                    or TaskState(task.state)
+                    in {
+                        TaskState.WAITING_HUMAN,
+                        TaskState.PAUSING,
+                        TaskState.PAUSED,
+                        TaskState.CANCELLING,
+                    }
+                    or self._has_blocking_gate(session, task.task_id)
+                )
+            )
+            or (run is not None and run.status == AgentRunStatus.CANCELLED)
+        )
+        if revoked:
+            if row is not None and row.status == OutboxStatus.IN_FLIGHT:
+                row.status = OutboxStatus.DEAD
+                if task is not None:
+                    row.revoke_epoch = task.revoke_epoch
+            # Adapter already started — keep occupancy and ensure stop
+            if run is not None and task is not None:
+                if run.workspace_id:
+                    ws = session.get(WorkspaceRow, run.workspace_id)
+                    if ws and ws.owner_run_id == run.run_id:
+                        ws.writer_alive = True
+                self._enqueue_stops_for_runs(
+                    session, task, [run.run_id], reason="start_ack_fenced"
+                )
+            return
+
         if row:
             row.status = OutboxStatus.ACKED
             row.acked_at = self.clock.now()
-        run = session.get(AgentRunRow, payload["run_id"])
         if run and run.status == AgentRunStatus.CREATED:
             run.status = AgentRunStatus.RUNNING
             run.started_at = self.clock.now()
@@ -3119,7 +3447,9 @@ class ApplicationService:
             row.status = OutboxStatus.ACKED
             row.acked_at = self.clock.now()
         run = session.get(AgentRunRow, payload["run_id"])
-        if run and run.workspace_id:
+        if run is None:
+            return
+        if run.workspace_id:
             ws = session.get(WorkspaceRow, run.workspace_id)
             if ws:
                 if result.get("alive"):
@@ -3130,6 +3460,21 @@ class ApplicationService:
                     if ws.owner_run_id == run.run_id and ws.state != WorkspaceState.QUARANTINED:
                         ws.state = WorkspaceState.READY
                         ws.owner_run_id = None
+        # Fenced / revoked start that never became RUNNING: settle as CANCELLED
+        if run.status == AgentRunStatus.CREATED and not result.get("alive"):
+            run.status = AgentRunStatus.CANCELLED
+            run.finished_at = self.clock.now()
+            run.terminal_reason = run.terminal_reason or payload.get("reason") or "start_revoked"
+            self._clear_run_occupancy(session, run, release_workspace=True)
+            if run.work_unit_id:
+                wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+                if wu is not None and wu.status == WorkUnitStatus.RUNNING:
+                    # Gate/pause may still block redisatch; free unit for later PENDING
+                    if wu.blocked_reason:
+                        pass
+                    else:
+                        wu.status = WorkUnitStatus.PENDING
+                    wu.active_run_id = None
 
     def _ack_outbox(self, session: Session, outbox_id: str, *, dead: bool = False) -> None:
         row = session.get(OutboxRow, outbox_id)
@@ -3292,6 +3637,7 @@ class ApplicationService:
                 "target_hash": d.target_hash,
                 "decision_kind": d.decision_kind,
                 "task_id": d.task_id,
+                "gate_lifecycle": d.gate_lifecycle,
             }
 
         return self.executor.run(_read)
