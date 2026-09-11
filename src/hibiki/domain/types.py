@@ -16,6 +16,11 @@ class AuthContext:
     auth_context_id: str
     scopes: frozenset[str] = frozenset()
     delegation_id: str | None = None
+    # Runtime binding for Internal run writes (server-issued credentials).
+    bound_task_id: str | None = None
+    bound_run_id: str | None = None
+    bound_fencing_epoch: int | None = None
+    bound_grant_epoch: int | None = None
 
     def is_human(self) -> bool:
         return self.actor_type == ActorType.HUMAN

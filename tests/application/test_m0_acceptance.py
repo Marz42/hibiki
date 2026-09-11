@@ -22,6 +22,7 @@ from tests.helpers import (
     human_auth,
     internal_auth,
     make_core,
+    run_auth,
     run_fencing_epoch,
     user_agent_auth,
 )
@@ -300,7 +301,7 @@ def test_h010_late_result_does_not_overwrite(tmp_path):
     assert run2 != run1
     r = svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run1),
         {
             "run_id": run1,
             "fencing_epoch": run_fencing_epoch(svc, run1),
@@ -390,7 +391,7 @@ def test_h013_verify_fail_blocks_verdict_pass_dep(tmp_path):
     run_id = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -439,7 +440,7 @@ def test_h015_unrelated_plan_bump_keeps_valid_result(tmp_path):
     run_id = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -503,7 +504,7 @@ def test_h016_upstream_hash_change_invalidates_pass(tmp_path):
     run_id = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -552,7 +553,7 @@ def test_h017_no_completed_without_acceptance(tmp_path):
     rid = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, rid),
         {
             "run_id": rid,
             "fencing_epoch": run_fencing_epoch(svc, rid),
@@ -597,7 +598,7 @@ def test_h019_lease_expired_writer_alive_quarantine(tmp_path):
     # stop via cancel path simulating lease recovery
     svc.execute(
         "set_writer_alive",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "workspace_id": f"ws_{wu}",
             "run_id": run_id,

@@ -192,7 +192,7 @@ class ApplicationService:
                     notes.append(f"outbox_unknown:{row.outbox_id}")
                 elif row.command_type == "agent.start":
                     notes.append(
-                        self._reclaim_or_fence_agent_start(
+                        self._fence_uncertain_start(
                             session, row, reason="outbox_inflight_timeout"
                         )
                     )
@@ -260,7 +260,8 @@ class ApplicationService:
         idempotency_key: str,
         ph: str,
     ) -> CommandResult:
-        task_id = str(payload.get("task_id") or "")
+        task_id = self._command_task_id(session, operation, payload)
+        self._authorize_run_command(session, operation, auth, payload)
         # §12.2 Inbox: actor_id + message_id dedup (separate from business idempotency)
         inbox_hit = self._check_inbox(session, auth, message_id, ph)
         if inbox_hit is not None:
@@ -332,6 +333,51 @@ class ApplicationService:
             self._wake_requested = True
             self.executor.on_after_commit(lambda: None)
         return result
+
+    def _command_task_id(
+        self, session: Session, operation: str, payload: dict[str, Any]
+    ) -> str:
+        """Use one authoritative namespace for lookup and storage."""
+        if operation == "create_task":
+            return ""
+        supplied = str(payload.get("task_id") or "")
+        for key, model in (
+            ("decision_id", DecisionRow),
+            ("run_id", AgentRunRow),
+            ("workspace_id", WorkspaceRow),
+            ("effect_id", SideEffectRow),
+        ):
+            if not payload.get(key):
+                continue
+            row = session.get(model, payload[key])
+            if row is None:
+                continue  # Handler returns the operation-specific not-found error.
+            if supplied and supplied != row.task_id:
+                raise AuthorizationError("task mismatch", code="authorization_denied")
+            supplied = row.task_id
+        return supplied
+
+    def _authorize_run_command(
+        self, session: Session, operation: str, auth: AuthContext, payload: dict[str, Any]
+    ) -> None:
+        if operation not in {"submit_result", "heartbeat", "set_writer_alive", "confirm_run_exit"}:
+            return
+        run_id = payload.get("run_id")
+        if operation == "set_writer_alive":
+            ws = session.get(WorkspaceRow, payload["workspace_id"])
+            if ws is None:
+                raise NotFoundError("workspace not found")
+            run_id = run_id or ws.owner_run_id
+            if not run_id or ws.owner_run_id != run_id:
+                raise AuthorizationError("workspace owner mismatch", code="authorization_denied")
+        run = session.get(AgentRunRow, run_id) if run_id else None
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        if operation == "confirm_run_exit" and auth.is_human():
+            if auth.principal_id != self._get_task(session, run.task_id).principal_id:
+                raise AuthorizationError("run principal mismatch", code="authorization_denied")
+            return
+        self._assert_run_write_binding(session, auth, run, payload)
 
     # ------------------------------------------------------------------
     # Idempotency + Inbox
@@ -445,6 +491,23 @@ class ApplicationService:
                 IdempotencyRow.idempotency_key == idempotency_key,
             )
         ).first()
+        if row is None and tid and operation != "create_task":
+            # Pre-fix run-only commands stored their result under the empty
+            # namespace. Adopt it only if its recorded target belongs to this
+            # Task; unrelated Tasks may legitimately reuse the same key.
+            legacy = session.scalars(
+                select(IdempotencyRow).where(
+                    IdempotencyRow.principal_id == auth.principal_id,
+                    IdempotencyRow.task_id == "",
+                    IdempotencyRow.operation_type == operation,
+                    IdempotencyRow.idempotency_key == idempotency_key,
+                )
+            ).first()
+            if legacy is not None:
+                stored = json.loads(legacy.result_json)
+                if self._command_task_id(session, operation, stored) == tid:
+                    legacy.task_id = tid
+                    row = legacy
         if row is None:
             return None
         if row.payload_hash != ph:
@@ -616,28 +679,21 @@ class ApplicationService:
                 )
         return f"outbox_fence_start:{row.outbox_id}"
 
-    def _reclaim_or_fence_agent_start(
+    def _fence_uncertain_start(
         self,
         session: Session,
         row: OutboxRow,
         *,
         reason: str,
     ) -> str:
-        """Distinguish never-sent reclaim from claimed-start verification.
+        """A claimed start stays uncertain until the Adapter revokes it.
 
-        PENDING reclaim is allowed only when the adapter confirms the executor
-        is not alive. Otherwise preserve the fact that start may have happened.
+        A missing process cannot rule out a delayed dispatcher/remote start.
+        Never turn a previously claimed start back into a never-sent PENDING.
         """
         payload = json.loads(row.payload_json)
-        run_id = payload.get("run_id")
-        run = session.get(AgentRunRow, run_id) if run_id else None
-        if self._adapter_may_be_alive(run_id):
-            return self._fence_claimed_agent_start(
-                session, row, run, reason=reason
-            )
-        row.status = OutboxStatus.PENDING
-        row.leased_until = None
-        return f"outbox_reclaim_start:{row.outbox_id}"
+        run = session.get(AgentRunRow, payload["run_id"])
+        return self._fence_claimed_agent_start(session, row, run, reason=reason)
 
     def _recover_work_unit_after_lost_run(
         self, session: Session, run: AgentRunRow
@@ -1664,6 +1720,7 @@ class ApplicationService:
                 run_id=run_id,
                 task_id=task.task_id,
                 assignment_kind=AssignmentKind.EXECUTE,
+                agent_instance_id=f"fake:{run_id}",
                 work_unit_id=wu_id,
                 work_unit_spec_version=plan_spec_version,
                 attempt_no=attempt,
@@ -1702,6 +1759,9 @@ class ApplicationService:
                             "run_id": run_id,
                             "task_id": task.task_id,
                             "assignment_kind": AssignmentKind.EXECUTE,
+                            "principal_id": task.principal_id,
+                            "agent_instance_id": run.agent_instance_id,
+                            "grant_epoch": run.grant_epoch,
                             "fencing_epoch": fencing,
                             "revoke_epoch": task.revoke_epoch,
                         }
@@ -1780,6 +1840,17 @@ class ApplicationService:
         if payload_run_id is not None and str(payload_run_id) != run.run_id:
             raise AuthorizationError(
                 "run id mismatch", code="authorization_denied"
+            )
+        if (
+            auth.bound_task_id != run.task_id
+            or auth.bound_run_id != run.run_id
+            or auth.bound_fencing_epoch != run.fencing_epoch
+            or auth.bound_grant_epoch != run.grant_epoch
+            or auth.actor_id != run.agent_instance_id
+        ):
+            raise AuthorizationError(
+                "authenticated runtime is not bound to this run",
+                code="authorization_denied",
             )
 
     def _submit_result(
@@ -1999,12 +2070,16 @@ class ApplicationService:
         session.flush()
         if not apply_to_work_unit:
             return
+        seen_criteria: set[str] = set()
         for ev in evidence_items:
             cid = ev.get("criterion_id")
             artifact_hash = ev.get("artifact_hash") or ev.get("artifact_ref")
             verdict = ev.get("verdict")
             if not cid or not artifact_hash or not verdict:
                 continue
+            if str(cid) in seen_criteria:
+                raise PreconditionError("duplicate criterion evidence", code="duplicate_evidence")
+            seen_criteria.add(str(cid))
             self._resolve_registered_artifact(session, task_id, str(artifact_hash))
             existing_ev = session.scalars(
                 select(AcceptanceEvidenceRow).where(
@@ -2410,10 +2485,19 @@ class ApplicationService:
         hashes: set[str] = set()
         for node in nodes:
             wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
-            if wu is None or wu.status != WorkUnitStatus.DONE:
+            if wu is None or wu.status != WorkUnitStatus.DONE or not wu.selected_result_ref:
                 continue
-            if wu.verified_artifact_hash:
-                hashes.add(str(wu.verified_artifact_hash))
+            run = session.scalars(select(AgentRunRow).where(
+                AgentRunRow.work_unit_id == wu.work_unit_id,
+                AgentRunRow.result_ref == wu.selected_result_ref,
+            )).one_or_none()
+            if run is None:
+                continue
+            result = json.loads(run.result_json or "{}")
+            for ref in list(result.get("artifact_refs") or []) + list(result.get("verified_artifact_refs") or []):
+                value = ref if isinstance(ref, str) else ref.get("hash")
+                if value:
+                    hashes.add(str(value))
         return hashes
 
     def _latest_criterion_evidence(
@@ -2439,7 +2523,10 @@ class ApplicationService:
         for row in rows:
             if row.work_unit_id and row.work_unit_id not in wu_ids:
                 continue
-            if delivery_hashes and row.artifact_hash not in delivery_hashes:
+            if row.artifact_hash not in delivery_hashes:
+                continue
+            wu = session.get(WorkUnitExecutionRow, row.work_unit_id) if row.work_unit_id else None
+            if wu is None or wu.selected_result_ref != row.result_ref:
                 continue
             return row
         return None
@@ -2477,28 +2564,6 @@ class ApplicationService:
             if ev_row is not None:
                 default_by_cid[cid] = self._evidence_item_from_row(cid, ev_row)
                 continue
-            # Fallback: current-plan DONE WU with explicit PASS + registered hash
-            for node in nodes:
-                wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
-                if wu is None or wu.status != WorkUnitStatus.DONE:
-                    continue
-                if wu.selected_verdict not in {Verdict.PASS, "PASS"}:
-                    continue
-                if not wu.verified_artifact_hash:
-                    continue
-                if delivery_hashes and wu.verified_artifact_hash not in delivery_hashes:
-                    continue
-                self._resolve_registered_artifact(
-                    session, task_id, wu.verified_artifact_hash
-                )
-                default_by_cid[cid] = {
-                    "criterion_id": cid,
-                    "work_unit_id": wu.work_unit_id,
-                    "result_ref": wu.selected_result_ref,
-                    "artifact_hash": wu.verified_artifact_hash,
-                    "verdict": wu.selected_verdict,
-                }
-                break
 
         for item in extra_evidence:
             cid = item.get("criterion_id")
@@ -3045,46 +3110,29 @@ class ApplicationService:
     def _confirm_run_exit(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
-        """Confirm executor exit and release Workspace — separate from Result (§8.2)."""
+        """Request a stop barrier; only its ACK can confirm exit and release."""
         run = session.get(AgentRunRow, payload["run_id"])
         if run is None:
             raise NotFoundError("run not found", code="run_not_found")
-        insp = self.agent_adapter.inspect(run.run_id)
-        if insp.get("alive") or insp.get("writer_alive"):
-            # Attempt cooperative stop then re-inspect
-            stop = self.agent_adapter.stop(run.run_id, payload.get("reason") or "confirm_exit")
-            insp = self.agent_adapter.inspect(run.run_id)
-            if stop.get("alive") or insp.get("alive") or insp.get("writer_alive"):
-                if run.workspace_id:
-                    ws = session.get(WorkspaceRow, run.workspace_id)
-                    if ws:
-                        ws.state = WorkspaceState.QUARANTINED
-                        ws.writer_alive = True
-                raise PreconditionError(
-                    "executor still alive after stop",
-                    code="writer_alive",
-                )
-        if run.workspace_id:
-            ws = session.get(WorkspaceRow, run.workspace_id)
-            if ws and ws.owner_run_id == run.run_id:
-                ws.writer_alive = False
-                if ws.state != WorkspaceState.QUARANTINED:
-                    ws.state = WorkspaceState.READY
-                    ws.owner_run_id = None
+        task = self._get_task(session, run.task_id)
+        # Revoke queued starts too; a claimed start remains occupied until stop ACK.
+        for row in session.scalars(select(OutboxRow).where(
+            OutboxRow.task_id == task.task_id,
+            OutboxRow.command_type == "agent.start",
+            OutboxRow.status.in_([OutboxStatus.PENDING, OutboxStatus.IN_FLIGHT]),
+        )):
+            if json.loads(row.payload_json).get("run_id") == run.run_id:
+                row.status = OutboxStatus.DEAD
+                row.leased_until = None
+        self._enqueue_stops_for_runs(session, task, [run.run_id], reason="confirm_exit")
         self._append_event(
-            session,
-            run.task_id,
-            "run.exit_confirmed",
-            auth_actor=auth.actor_id,
-            payload={"run_id": run.run_id},
+            session, run.task_id, "run.exit_confirmation_requested",
+            auth_actor=auth.actor_id, payload={"run_id": run.run_id},
         )
-        return CommandResult.success(
-            {
-                "run_id": run.run_id,
-                "workspace_released": True,
-                "alive": False,
-            }
-        )
+        return CommandResult.success({
+            "task_id": run.task_id, "run_id": run.run_id,
+            "stop_requested": True, "workspace_released": False,
+        })
 
     def _set_writer_alive(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
@@ -3595,12 +3643,35 @@ class ApplicationService:
             "payload": json.loads(row.payload_json),
         }
 
+    def _start_send_allowed(self, session: Session, item: dict[str, Any]) -> bool:
+        row = session.get(OutboxRow, item["outbox_id"])
+        run = session.get(AgentRunRow, item["payload"]["run_id"])
+        task = session.get(TaskRow, row.task_id) if row else None
+        if row is None or row.status != OutboxStatus.IN_FLIGHT:
+            return False
+        if (
+            run is None or task is None
+            or run.status not in {AgentRunStatus.CREATED, AgentRunStatus.RUNNING}
+            or row.revoke_epoch != task.revoke_epoch
+            or task.cancel_intent or task.pause_intent
+            or self._has_blocking_gate(session, task.task_id)
+            or task.state not in {TaskState.PLANNING, TaskState.EXECUTING, TaskState.VERIFYING}
+        ):
+            self._fence_claimed_agent_start(session, row, run, reason="start_send_revoked")
+            return False
+        return True
+
     def _dispatch_outbox_item(self, item: dict[str, Any]) -> None:
         ctype = item["command_type"]
         payload = item["payload"]
         try:
             if ctype == "agent.start":
-                self.agent_adapter.start(payload)
+                if not self.executor.run(lambda s: self._start_send_allowed(s, item)):
+                    return
+                result = self.agent_adapter.start(payload)
+                if result.get("start_revoked"):
+                    self.executor.run(lambda s: self._ack_outbox(s, item["outbox_id"], dead=True))
+                    return
                 self.executor.run(
                     lambda s: self._ack_outbox_and_mark_running(
                         s, item["outbox_id"], payload
@@ -3648,15 +3719,9 @@ class ApplicationService:
         if row.command_type == "agent.start":
             if row.status == OutboxStatus.DEAD:
                 return
-            # Adapter may already have started even if ACK/tx failed — inspect before
-            # erasing the claim into a "never sent" PENDING reclaim.
-            note = self._reclaim_or_fence_agent_start(
-                session, row, reason="start_dispatch_failed"
-            )
-            if note.startswith("outbox_reclaim_start:"):
-                row.leased_until = self.clock.now() + timedelta(
-                    seconds=DEFAULTS.retry_backoff_seconds[0]
-                )
+            # A failed call may still create a process later. Revoke the run
+            # before permitting another assignment to take its Workspace.
+            self._fence_uncertain_start(session, row, reason="start_dispatch_failed")
             return
         # other outbox types: bounded backoff via PENDING
         if row.status == OutboxStatus.DEAD:
@@ -3727,10 +3792,15 @@ class ApplicationService:
         run = session.get(AgentRunRow, payload["run_id"])
         if run is None:
             return
+        stopped = (
+            result.get("start_revoked") is True
+            and result.get("alive") is False
+            and result.get("writer_alive") is False
+        )
         if run.workspace_id:
             ws = session.get(WorkspaceRow, run.workspace_id)
-            if ws:
-                if result.get("alive"):
+            if ws and ws.owner_run_id == run.run_id:
+                if not stopped:
                     ws.state = WorkspaceState.QUARANTINED
                     ws.writer_alive = True
                 else:
@@ -3739,7 +3809,7 @@ class ApplicationService:
                         ws.state = WorkspaceState.READY
                         ws.owner_run_id = None
         # Fenced / revoked start that never became RUNNING: settle as CANCELLED
-        if run.status == AgentRunStatus.CREATED and not result.get("alive"):
+        if run.status == AgentRunStatus.CREATED and stopped:
             run.status = AgentRunStatus.CANCELLED
             run.finished_at = self.clock.now()
             run.terminal_reason = run.terminal_reason or payload.get("reason") or "start_revoked"
@@ -3753,6 +3823,12 @@ class ApplicationService:
                     else:
                         wu.status = WorkUnitStatus.PENDING
                     wu.active_run_id = None
+
+        if stopped:
+            self._append_event(
+                session, run.task_id, "run.exit_confirmed", auth_actor=None,
+                payload={"run_id": run.run_id, "start_revoked": True},
+            )
 
     def _ack_outbox(self, session: Session, outbox_id: str, *, dead: bool = False) -> None:
         row = session.get(OutboxRow, outbox_id)
@@ -3809,7 +3885,8 @@ class ApplicationService:
                 }
             )
         except Exception as exc:  # noqa: BLE001
-            self.executor.run(lambda s: self._fail_outbox(s, item["outbox_id"], str(exc)))
+            error = str(exc)
+            self.executor.run(lambda s: self._fail_outbox(s, item["outbox_id"], error))
             return
 
         def _apply(session: Session) -> None:

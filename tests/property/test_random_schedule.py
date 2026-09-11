@@ -11,7 +11,7 @@ import random
 from collections import Counter
 
 from hibiki.domain.enums import DecisionStatus, TaskState
-from tests.helpers import human_auth, internal_auth, make_core, run_fencing_epoch, user_agent_auth
+from tests.helpers import human_auth, make_core, run_auth, run_fencing_epoch, user_agent_auth
 
 OPS = (
     "submit_contract",
@@ -78,16 +78,33 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                     fencing = run_fencing_epoch(svc, rid)
                 except AssertionError:
                     fencing = 0
-                r = _exec(
-                    "submit_result",
-                    internal_auth(),
-                    {
-                        "run_id": rid,
-                        "fencing_epoch": fencing,
-                        "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
-                    },
-                    message_id=f"term-late-{seed}-{step}",
-                )
+                try:
+                    worker = run_auth(svc, rid)
+                    fencing = worker.bound_fencing_epoch
+                except AssertionError:
+                    worker = None
+                if worker is not None:
+                    r = _exec(
+                        "submit_result",
+                        worker,
+                        {
+                            "run_id": rid,
+                            "fencing_epoch": fencing,
+                            "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
+                        },
+                        message_id=f"term-late-{seed}-{step}",
+                    )
+                else:
+                    r = _exec(
+                        "submit_result",
+                        human,
+                        {
+                            "run_id": rid,
+                            "fencing_epoch": fencing,
+                            "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
+                        },
+                        message_id=f"term-late-{seed}-{step}",
+                    )
                 # may fail (terminal run) or be late history — must not revive task
             else:
                 r = _exec(
@@ -214,7 +231,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 if run["status"] == "RUNNING":
                     _exec(
                         "submit_result",
-                        internal_auth(),
+                        run_auth(svc, run["run_id"]),
                         {
                             "run_id": run["run_id"],
                             "fencing_epoch": run["fencing_epoch"],
@@ -231,16 +248,29 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                     break
             else:
                 # No running run — still count an illegal/no-op input
-                _exec(
-                    "submit_result",
-                    internal_auth(),
-                    {
-                        "run_id": "run_missing",
-                        "fencing_epoch": 0,
-                        "result": {"outcome": "COMPLETED"},
-                    },
-                    message_id=f"sr-miss-{seed}-{step}",
-                )
+                if known_run_ids:
+                    bad = run_auth(svc, known_run_ids[0])
+                    _exec(
+                        "submit_result",
+                        bad,
+                        {
+                            "run_id": "run_missing",
+                            "fencing_epoch": 0,
+                            "result": {"outcome": "COMPLETED"},
+                        },
+                        message_id=f"sr-miss-{seed}-{step}",
+                    )
+                else:
+                    _exec(
+                        "submit_result",
+                        human,
+                        {
+                            "run_id": "run_missing",
+                            "fencing_epoch": 0,
+                            "result": {"outcome": "COMPLETED"},
+                        },
+                        message_id=f"sr-miss-{seed}-{step}",
+                    )
 
         elif op == "confirm_exit":
             for run in svc.list_runs(task_id):
@@ -266,16 +296,33 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 fencing = run_fencing_epoch(svc, rid)
             except AssertionError:
                 fencing = 0
-            _exec(
-                "submit_result",
-                internal_auth(),
-                {
-                    "run_id": rid,
-                    "fencing_epoch": fencing,
-                    "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
-                },
-                message_id=f"late-{seed}-{step}",
-            )
+            try:
+                worker = run_auth(svc, rid)
+                fencing = worker.bound_fencing_epoch
+            except AssertionError:
+                worker = None
+            if worker is not None:
+                _exec(
+                    "submit_result",
+                    worker,
+                    {
+                        "run_id": rid,
+                        "fencing_epoch": fencing,
+                        "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
+                    },
+                    message_id=f"late-{seed}-{step}",
+                )
+            else:
+                _exec(
+                    "submit_result",
+                    human,
+                    {
+                        "run_id": rid,
+                        "fencing_epoch": fencing,
+                        "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
+                    },
+                    message_id=f"late-{seed}-{step}",
+                )
 
         elif op == "pause" and state not in {
             TaskState.PAUSING,

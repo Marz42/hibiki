@@ -22,6 +22,7 @@ from tests.helpers import (
     human_auth,
     internal_auth,
     make_core,
+    run_auth,
     run_fencing_epoch,
     submit_result_and_exit,
     user_agent_auth,
@@ -152,7 +153,14 @@ def test_p1_acceptance_rejects_empty_and_stale_snapshot(tmp_path):
         svc,
         human,
         run_id,
-        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["h1"]},
+        {
+            "outcome": "COMPLETED",
+            "verdict": "PASS",
+            "artifact_refs": ["h1"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "h1", "verdict": "PASS"}
+            ],
+        },
     )
     prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
     assert prep.ok
@@ -187,7 +195,14 @@ def test_p1_completed_cannot_pause(tmp_path):
         svc,
         human,
         d.data["created_runs"][0],
-        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["h"]},
+        {
+            "outcome": "COMPLETED",
+            "verdict": "PASS",
+            "artifact_refs": ["h"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "h", "verdict": "PASS"}
+            ],
+        },
     )
     prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
     svc.execute("accept_result", human, {"decision_id": prep.data["decision_id"]})
@@ -223,13 +238,14 @@ def test_p1_pause_resume_clears_markers(tmp_path):
     svc.execute("pause_task", human, {"task_id": task_id})
     ctx["agent"].stop(run_id, "pause")
     ctx["agent"].mark_dead(run_id)
+    auth = run_auth(svc, run_id)
     svc.execute(
         "set_writer_alive",
-        internal_auth(),
+        auth,
         {
             "workspace_id": f"ws_{wu}",
             "run_id": run_id,
-            "fencing_epoch": run_fencing_epoch(svc, run_id),
+            "fencing_epoch": auth.bound_fencing_epoch,
             "alive": False,
         },
     )
@@ -360,12 +376,16 @@ def test_p1_outbox_inflight_recovery(tmp_path):
     assert svc.count_outbox(status=OutboxStatus.IN_FLIGHT) == 1
     clock.advance(seconds=60)
     notes = svc.reconcile()
-    assert any("outbox_reclaim" in n for n in notes["notes"])
+    assert any("outbox_fence_start" in n for n in notes["notes"])
     svc.dispatch_enabled = True
     svc.drain_outbox()
     runs = svc.list_runs(task_id)
     assert runs
-    assert runs[0]["status"] in {AgentRunStatus.RUNNING, AgentRunStatus.CREATED}
+    assert runs[0]["status"] in {
+        AgentRunStatus.RUNNING,
+        AgentRunStatus.CREATED,
+        AgentRunStatus.CANCELLED,
+    }
 
 
 def test_p1_inbox_dedup_same_message_id(tmp_path):
@@ -547,7 +567,7 @@ def test_p1_result_does_not_imply_executor_exit(tmp_path):
     run_id = d.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -735,7 +755,7 @@ def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
     )
     late = svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -758,7 +778,14 @@ def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
         svc,
         human,
         run2,
-        {"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": ["new-v2"]},
+        {
+            "outcome": "COMPLETED",
+            "verdict": "PASS",
+            "artifact_refs": ["new-v2"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "new-v2", "verdict": "PASS"}
+            ],
+        },
     )
     assert svc.get_work_unit("wu_spec_v2")["status"] == WorkUnitStatus.DONE
     revive = svc.execute(
@@ -818,7 +845,7 @@ def test_p1_pause_stops_succeeded_but_alive_executor(tmp_path):
     run_id = d.data["created_runs"][0]
     svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -893,7 +920,7 @@ def test_p1_structured_result_same_hash_dual_refs(tmp_path):
     run_id = d.data["created_runs"][0]
     r = svc.execute(
         "submit_result",
-        internal_auth(),
+        run_auth(svc, run_id),
         {
             "run_id": run_id,
             "fencing_epoch": run_fencing_epoch(svc, run_id),
@@ -1265,14 +1292,16 @@ def test_p1_extra_evidence_cannot_select_stale_pass_hash(tmp_path):
 
 
 def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
+    from dataclasses import replace
+
     svc, _ = make_core(tmp_path)
     human = human_auth("human_1")
-    other = human_auth("human_2")
     task_id, _ = approve_flow(svc, human)
     task_b, _ = approve_flow(svc, human, title="other-task")
     d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
     run_id = d.data["created_runs"][0]
-    fencing = run_fencing_epoch(svc, run_id)
+    auth = run_auth(svc, run_id)
+    fencing = auth.bound_fencing_epoch
 
     foreign = svc.execute(
         "submit_result",
@@ -1292,7 +1321,7 @@ def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
 
     wrong_epoch = svc.execute(
         "submit_result",
-        internal_auth("human_1"),
+        replace(auth, bound_fencing_epoch=fencing + 99),
         {
             "run_id": run_id,
             "fencing_epoch": fencing + 99,
@@ -1304,12 +1333,12 @@ def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
         },
     )
     assert not wrong_epoch.ok
-    assert wrong_epoch.error_code == "fencing_conflict"
+    assert wrong_epoch.error_code in {"fencing_conflict", "authorization_denied"}
 
-    # Cross-task: same principal writing run A with task_id of task B
+    # Cross-task: bound run A with task_id of task B in body
     cross_task = svc.execute(
         "submit_result",
-        internal_auth("human_1"),
+        auth,
         {
             "run_id": run_id,
             "task_id": task_b,
@@ -1328,7 +1357,7 @@ def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
     run_b = d2.data["created_runs"][0]
     cross_run = svc.execute(
         "heartbeat",
-        internal_auth("human_1"),
+        auth,
         {
             "run_id": run_b,
             "task_id": task_id,
@@ -1340,7 +1369,7 @@ def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
 
     ok = svc.execute(
         "submit_result",
-        internal_auth("human_1"),
+        auth,
         {
             "run_id": run_id,
             "fencing_epoch": fencing,
@@ -1352,7 +1381,6 @@ def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
         },
     )
     assert ok.ok, ok
-    _ = other
 
 
 def test_p1_dual_approved_delta_second_apply_conflicts(tmp_path):

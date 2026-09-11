@@ -5,6 +5,7 @@ from pathlib import Path
 from hibiki.application.bootstrap import bootstrap_core
 from hibiki.domain.enums import ActorType
 from hibiki.domain.types import AuthContext
+from hibiki.persistence.models import AgentRunRow, TaskRow
 
 
 def human_auth(principal: str = "human_1") -> AuthContext:
@@ -64,8 +65,6 @@ def approve_flow(svc, auth, *, title: str = "t1"):
 
 
 def run_fencing_epoch(svc, run_id: str) -> int:
-    from hibiki.persistence.models import AgentRunRow
-
     def _read(session):
         run = session.get(AgentRunRow, run_id)
         assert run is not None, f"run {run_id} not found"
@@ -74,12 +73,36 @@ def run_fencing_epoch(svc, run_id: str) -> int:
     return svc.executor.run(_read)
 
 
+def run_auth(svc, run_id: str) -> AuthContext:
+    """Server-shaped Internal credentials bound to a concrete Run."""
+
+    def _read(session):
+        run = session.get(AgentRunRow, run_id)
+        assert run is not None, f"run {run_id} not found"
+        task = session.get(TaskRow, run.task_id)
+        assert task is not None, f"task {run.task_id} not found"
+        assert run.agent_instance_id, f"run {run_id} missing agent_instance_id"
+        return AuthContext(
+            principal_id=task.principal_id,
+            actor_id=run.agent_instance_id,
+            actor_type=ActorType.INTERNAL,
+            auth_context_id=f"run:{run_id}",
+            bound_task_id=run.task_id,
+            bound_run_id=run.run_id,
+            bound_fencing_epoch=int(run.fencing_epoch),
+            bound_grant_epoch=int(run.grant_epoch),
+        )
+
+    return svc.executor.run(_read)
+
+
 def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
     """Submit business result then confirm executor exit (SPEC §8.2).
 
-    Result submission is Internal-only; exit confirm may use the caller auth.
+    Result submission uses run-bound Internal credentials; exit confirm may use
+    the Human caller (principal match) or the same run-bound auth.
     """
-    worker = internal_auth(getattr(auth, "principal_id", "human_1"))
+    worker = run_auth(svc, run_id)
     payload_result = result or {
         "outcome": "COMPLETED",
         "verdict": "PASS",
@@ -90,7 +113,7 @@ def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
         worker,
         {
             "run_id": run_id,
-            "fencing_epoch": run_fencing_epoch(svc, run_id),
+            "fencing_epoch": worker.bound_fencing_epoch,
             "result": payload_result,
         },
     )
