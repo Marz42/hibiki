@@ -17,7 +17,15 @@ from hibiki.domain.enums import (
 )
 from hibiki.persistence.session import InstanceLock
 from hibiki.runtime.fake_external import FakeExternalAdapter
-from tests.helpers import approve_flow, human_auth, internal_auth, make_core, submit_result_and_exit, user_agent_auth
+from tests.helpers import (
+    approve_flow,
+    human_auth,
+    internal_auth,
+    make_core,
+    run_fencing_epoch,
+    submit_result_and_exit,
+    user_agent_auth,
+)
 
 
 class ThrowingOnceExternal(FakeExternalAdapter):
@@ -218,7 +226,12 @@ def test_p1_pause_resume_clears_markers(tmp_path):
     svc.execute(
         "set_writer_alive",
         internal_auth(),
-        {"workspace_id": f"ws_{wu}", "alive": False},
+        {
+            "workspace_id": f"ws_{wu}",
+            "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
+            "alive": False,
+        },
     )
     r = svc.execute("runtime_quiescent", human, {"task_id": task_id})
     assert r.ok
@@ -537,6 +550,7 @@ def test_p1_result_does_not_imply_executor_exit(tmp_path):
         internal_auth(),
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
@@ -658,7 +672,11 @@ def test_p1_client_extra_evidence_cannot_bypass_fail(tmp_path):
         },
     )
     assert not prep2.ok
-    assert prep2.error_code in {"evidence_failed", "missing_evidence"}
+    assert prep2.error_code in {
+        "evidence_failed",
+        "missing_evidence",
+        "evidence_not_current",
+    }
     assert svc.get_task(task_id)["state"] != TaskState.COMPLETED
 
 
@@ -720,6 +738,7 @@ def test_p1_spec_change_rejects_old_run_completing_new_definition(tmp_path):
         internal_auth(),
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
@@ -802,6 +821,7 @@ def test_p1_pause_stops_succeeded_but_alive_executor(tmp_path):
         internal_auth(),
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
@@ -876,6 +896,7 @@ def test_p1_structured_result_same_hash_dual_refs(tmp_path):
         internal_auth(),
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
@@ -965,6 +986,7 @@ def test_p1_user_agent_cannot_submit_result(tmp_path):
         ua,
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
@@ -1048,3 +1070,340 @@ def test_p1_contract_delta_stays_pending_apply(tmp_path):
     assert applied.ok, applied
     assert svc.get_task(task_id)["contract_version"] == 2
     assert svc.get_task(task_id)["model_call_limit"] == 500
+
+
+def test_p0_reconcile_inflight_start_then_gate_no_double_writer(tmp_path):
+    """Claimed start + lease expiry + Gate must not free Workspace for a second writer."""
+    from hibiki.runtime.clock import FakeClock
+
+    clock = FakeClock()
+    svc, ctx = make_core(tmp_path, clock=clock, dispatch_enabled=False)
+    human = human_auth()
+    task_id, wu = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+
+    item = svc.executor.run(svc._claim_one_outbox)
+    assert item is not None
+    assert item["command_type"] == "agent.start"
+    ctx["agent"].start(item["payload"])
+    assert ctx["agent"].is_alive(run_id)
+    # ACK never persisted — lease expires, reconcile must not erase claim
+    clock.advance(seconds=60)
+    notes = svc.reconcile()
+    assert any("outbox_fence_start" in n for n in notes["notes"])
+    assert svc.count_outbox(status=OutboxStatus.IN_FLIGHT, task_id=task_id) == 0
+    from hibiki.persistence.models import OutboxRow
+    from sqlalchemy import select
+
+    def _pending_starts(session):
+        return [
+            r.outbox_id
+            for r in session.scalars(
+                select(OutboxRow).where(
+                    OutboxRow.task_id == task_id,
+                    OutboxRow.status == OutboxStatus.PENDING,
+                    OutboxRow.command_type == "agent.start",
+                )
+            )
+        ]
+
+    assert svc.executor.run(_pending_starts) == []
+
+    g = svc.execute("open_blocking_gate", human, {"task_id": task_id, "reason": "hold"})
+    assert svc.get_task(task_id)["state"] == TaskState.WAITING_HUMAN
+    ws = svc.get_workspace(f"ws_{wu}")
+    assert ws["owner_run_id"] == run_id
+    assert ws["writer_alive"] is True
+
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": g.data["decision_id"], "choice": "APPROVE"},
+    )
+    assert ctx["agent"].is_alive(run_id)
+    svc.dispatch_enabled = True
+    r = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert r.ok
+    assert r.data["created_runs"] == []
+
+    svc.drain_outbox()
+    assert not ctx["agent"].is_alive(run_id)
+    r2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    assert r2.ok
+    assert len(r2.data["created_runs"]) == 1
+    assert r2.data["created_runs"][0] != run_id
+    alive = [rid for rid in ctx["agent"].started if ctx["agent"].is_alive(rid)]
+    assert len(alive) <= 1
+
+
+def test_p1_evidence_sequence_beats_same_created_at_pass(tmp_path):
+    """PASS then FAIL at identical FakeClock time — Core sequence selects FAIL."""
+    from hibiki.runtime.clock import FakeClock
+
+    from sqlalchemy import select
+
+    from hibiki.persistence.models import WorkUnitExecutionRow
+
+    clock = FakeClock()
+    svc, _ = make_core(tmp_path, clock=clock)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run1 = d.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run1,
+        {
+            "outcome": "COMPLETED",
+            "verdict": "PASS",
+            "artifact_refs": ["hashX"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "hashX", "verdict": "PASS"}
+            ],
+        },
+    )
+
+    def _reopen(session):
+        for wu in session.scalars(
+            select(WorkUnitExecutionRow).where(WorkUnitExecutionRow.task_id == task_id)
+        ):
+            wu.status = WorkUnitStatus.PENDING
+            wu.selected_verdict = None
+            wu.verified_artifact_hash = None
+            wu.active_run_id = None
+
+    svc.executor.run(_reopen)
+    d2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run2 = d2.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run2,
+        {
+            "outcome": "COMPLETED",
+            "verdict": "FAIL",
+            "artifact_refs": ["hashX"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "hashX", "verdict": "FAIL"}
+            ],
+        },
+    )
+    prep = svc.execute("prepare_acceptance", human, {"task_id": task_id})
+    assert not prep.ok
+    assert prep.error_code in {"evidence_failed", "missing_evidence"}
+
+
+def test_p1_extra_evidence_cannot_select_stale_pass_hash(tmp_path):
+    """Client citing old PASS hash while current delivery is FAIL must be rejected."""
+    from sqlalchemy import select
+
+    from hibiki.persistence.models import WorkUnitExecutionRow
+
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run1 = d.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run1,
+        {
+            "outcome": "COMPLETED",
+            "verdict": "PASS",
+            "artifact_refs": ["old-hash"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "old-hash", "verdict": "PASS"}
+            ],
+        },
+    )
+
+    def _reopen(session):
+        for wu in session.scalars(
+            select(WorkUnitExecutionRow).where(WorkUnitExecutionRow.task_id == task_id)
+        ):
+            wu.status = WorkUnitStatus.PENDING
+            wu.selected_verdict = None
+            wu.verified_artifact_hash = None
+            wu.active_run_id = None
+
+    svc.executor.run(_reopen)
+    d2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run2 = d2.data["created_runs"][0]
+    submit_result_and_exit(
+        svc,
+        human,
+        run2,
+        {
+            "outcome": "COMPLETED",
+            "verdict": "FAIL",
+            "artifact_refs": ["new-hash"],
+            "acceptance_evidence": [
+                {"criterion_id": "c1", "artifact_hash": "new-hash", "verdict": "FAIL"}
+            ],
+        },
+    )
+    prep = svc.execute(
+        "prepare_acceptance",
+        human,
+        {
+            "task_id": task_id,
+            "evidence": [
+                {"criterion_id": "c1", "artifact_hash": "old-hash", "verdict": "PASS"}
+            ],
+        },
+    )
+    assert not prep.ok
+    assert prep.error_code in {
+        "evidence_not_current",
+        "evidence_failed",
+        "missing_evidence",
+    }
+    assert svc.get_task(task_id)["state"] != TaskState.COMPLETED
+
+
+def test_p1_internal_must_bind_principal_and_fencing(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth("human_1")
+    other = human_auth("human_2")
+    task_id, _ = approve_flow(svc, human)
+    task_b, _ = approve_flow(svc, human, title="other-task")
+    d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = d.data["created_runs"][0]
+    fencing = run_fencing_epoch(svc, run_id)
+
+    foreign = svc.execute(
+        "submit_result",
+        internal_auth("human_2"),
+        {
+            "run_id": run_id,
+            "fencing_epoch": fencing,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["x"],
+            },
+        },
+    )
+    assert not foreign.ok
+    assert foreign.error_code == "authorization_denied"
+
+    wrong_epoch = svc.execute(
+        "submit_result",
+        internal_auth("human_1"),
+        {
+            "run_id": run_id,
+            "fencing_epoch": fencing + 99,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["x"],
+            },
+        },
+    )
+    assert not wrong_epoch.ok
+    assert wrong_epoch.error_code == "fencing_conflict"
+
+    # Cross-task: same principal writing run A with task_id of task B
+    cross_task = svc.execute(
+        "submit_result",
+        internal_auth("human_1"),
+        {
+            "run_id": run_id,
+            "task_id": task_b,
+            "fencing_epoch": fencing,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["x"],
+            },
+        },
+    )
+    assert not cross_task.ok
+    assert cross_task.error_code == "authorization_denied"
+
+    d2 = svc.execute("dispatch_ready_runs", human, {"task_id": task_b})
+    run_b = d2.data["created_runs"][0]
+    cross_run = svc.execute(
+        "heartbeat",
+        internal_auth("human_1"),
+        {
+            "run_id": run_b,
+            "task_id": task_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_b),
+        },
+    )
+    assert not cross_run.ok
+    assert cross_run.error_code == "authorization_denied"
+
+    ok = svc.execute(
+        "submit_result",
+        internal_auth("human_1"),
+        {
+            "run_id": run_id,
+            "fencing_epoch": fencing,
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": ["ok"],
+            },
+        },
+    )
+    assert ok.ok, ok
+    _ = other
+
+
+def test_p1_dual_approved_delta_second_apply_conflicts(tmp_path):
+    svc, _ = make_core(tmp_path)
+    human = human_auth()
+    task_id, _ = approve_flow(svc, human)
+    gen = svc.execute("replace_planner_generation", human, {"task_id": task_id}).data[
+        "generation"
+    ]
+    r1 = svc.execute(
+        "submit_plan_proposal",
+        human,
+        {
+            "task_id": task_id,
+            "generation": gen,
+            "changes_authorization": True,
+            "delta": {"resource_limits": {"model_call_limit": 300}},
+            "nodes": [{"work_unit_id": "wu_x", "spec_version": 1}],
+            "edges": [],
+        },
+    )
+    assert r1.ok, r1
+    # Second proposal against same baseline v1
+    r2 = svc.execute(
+        "submit_plan_proposal",
+        human,
+        {
+            "task_id": task_id,
+            "generation": gen,
+            "changes_authorization": True,
+            "delta": {"resource_limits": {"model_call_limit": 400}},
+            "nodes": [{"work_unit_id": "wu_x", "spec_version": 1}],
+            "edges": [],
+        },
+    )
+    assert r2.ok, r2
+    d1, d2 = r1.data["decision_id"], r2.data["decision_id"]
+    assert svc.execute(
+        "resolve_decision", human, {"decision_id": d1, "choice": "APPROVE"}
+    ).ok
+    assert svc.execute(
+        "resolve_decision", human, {"decision_id": d2, "choice": "APPROVE"}
+    ).ok
+    first = svc.execute("apply_contract_delta", human, {"decision_id": d1})
+    assert first.ok, first
+    assert svc.get_task(task_id)["contract_version"] == 2
+    assert svc.get_task(task_id)["model_call_limit"] == 300
+    second = svc.execute("apply_contract_delta", human, {"decision_id": d2})
+    assert not second.ok
+    assert second.error_code in {"baseline_stale", "target_version_taken"}
+    # Approval history preserved; apply gate closed without renumber
+    assert svc.get_decision(d2)["status"] == "APPROVED"
+    assert svc.get_task(task_id)["contract_version"] == 2
+    assert svc.get_task(task_id)["model_call_limit"] == 300

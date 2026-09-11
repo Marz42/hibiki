@@ -63,6 +63,17 @@ def approve_flow(svc, auth, *, title: str = "t1"):
     return task_id, r.data.get("nodes", [None])[0]
 
 
+def run_fencing_epoch(svc, run_id: str) -> int:
+    from hibiki.persistence.models import AgentRunRow
+
+    def _read(session):
+        run = session.get(AgentRunRow, run_id)
+        assert run is not None, f"run {run_id} not found"
+        return int(run.fencing_epoch)
+
+    return svc.executor.run(_read)
+
+
 def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
     """Submit business result then confirm executor exit (SPEC §8.2).
 
@@ -77,7 +88,11 @@ def submit_result_and_exit(svc, auth, run_id: str, result: dict | None = None):
     r = svc.execute(
         "submit_result",
         worker,
-        {"run_id": run_id, "result": payload_result},
+        {
+            "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
+            "result": payload_result,
+        },
     )
     assert r.ok, r
     r2 = svc.execute("confirm_run_exit", auth, {"run_id": run_id})

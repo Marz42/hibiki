@@ -454,6 +454,7 @@ class AcceptanceEvidenceRow(Base):
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (

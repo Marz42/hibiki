@@ -11,7 +11,7 @@ import random
 from collections import Counter
 
 from hibiki.domain.enums import DecisionStatus, TaskState
-from tests.helpers import human_auth, internal_auth, make_core, user_agent_auth
+from tests.helpers import human_auth, internal_auth, make_core, run_fencing_epoch, user_agent_auth
 
 OPS = (
     "submit_contract",
@@ -73,11 +73,17 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 )
                 assert not r.ok
             elif known_run_ids:
+                rid = known_run_ids[0]
+                try:
+                    fencing = run_fencing_epoch(svc, rid)
+                except AssertionError:
+                    fencing = 0
                 r = _exec(
                     "submit_result",
                     internal_auth(),
                     {
-                        "run_id": known_run_ids[0],
+                        "run_id": rid,
+                        "fencing_epoch": fencing,
                         "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
                     },
                     message_id=f"term-late-{seed}-{step}",
@@ -211,6 +217,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                         internal_auth(),
                         {
                             "run_id": run["run_id"],
+                            "fencing_epoch": run["fencing_epoch"],
                             "result": {
                                 "outcome": "COMPLETED",
                                 "verdict": "PASS",
@@ -227,7 +234,11 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 _exec(
                     "submit_result",
                     internal_auth(),
-                    {"run_id": "run_missing", "result": {"outcome": "COMPLETED"}},
+                    {
+                        "run_id": "run_missing",
+                        "fencing_epoch": 0,
+                        "result": {"outcome": "COMPLETED"},
+                    },
                     message_id=f"sr-miss-{seed}-{step}",
                 )
 
@@ -250,11 +261,17 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 )
 
         elif op == "late_result" and known_run_ids:
+            rid = known_run_ids[0]
+            try:
+                fencing = run_fencing_epoch(svc, rid)
+            except AssertionError:
+                fencing = 0
             _exec(
                 "submit_result",
                 internal_auth(),
                 {
-                    "run_id": known_run_ids[0],
+                    "run_id": rid,
+                    "fencing_epoch": fencing,
                     "result": {"outcome": "COMPLETED", "artifact_refs": ["late"]},
                 },
                 message_id=f"late-{seed}-{step}",

@@ -17,7 +17,14 @@ from hibiki.domain.enums import (
 from hibiki.persistence.models import OutboxRow
 from hibiki.runtime.clock import FakeClock
 from hibiki.runtime.fake_external import FakeExternalAdapter
-from tests.helpers import approve_flow, human_auth, internal_auth, make_core, user_agent_auth
+from tests.helpers import (
+    approve_flow,
+    human_auth,
+    internal_auth,
+    make_core,
+    run_fencing_epoch,
+    user_agent_auth,
+)
 
 
 def test_h001_no_active_contract_no_dispatch(tmp_path):
@@ -294,7 +301,11 @@ def test_h010_late_result_does_not_overwrite(tmp_path):
     r = svc.execute(
         "submit_result",
         internal_auth(),
-        {"run_id": run1, "result": {"outcome": "COMPLETED", "summary": "late"}},
+        {
+            "run_id": run1,
+            "fencing_epoch": run_fencing_epoch(svc, run1),
+            "result": {"outcome": "COMPLETED", "summary": "late"},
+        },
     )
     assert r.ok
     assert r.data.get("late_arrival")
@@ -382,6 +393,7 @@ def test_h013_verify_fail_blocks_verdict_pass_dep(tmp_path):
         internal_auth(),
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "FAIL",
@@ -428,7 +440,11 @@ def test_h015_unrelated_plan_bump_keeps_valid_result(tmp_path):
     svc.execute(
         "submit_result",
         internal_auth(),
-        {"run_id": run_id, "result": {"outcome": "COMPLETED", "verdict": "PASS"}},
+        {
+            "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
+            "result": {"outcome": "COMPLETED", "verdict": "PASS"},
+        },
     )
     assert svc.get_work_unit(wu)["status"] == WorkUnitStatus.DONE
     # bump plan with extra unrelated node; existing DONE remains
@@ -490,6 +506,7 @@ def test_h016_upstream_hash_change_invalidates_pass(tmp_path):
         internal_auth(),
         {
             "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
             "result": {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
@@ -532,10 +549,15 @@ def test_h017_no_completed_without_acceptance(tmp_path):
     auth = human_auth()
     task_id, wu = approve_flow(svc, auth)
     r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
+    rid = r.data["created_runs"][0]
     svc.execute(
         "submit_result",
         internal_auth(),
-        {"run_id": r.data["created_runs"][0], "result": {"outcome": "COMPLETED"}},
+        {
+            "run_id": rid,
+            "fencing_epoch": run_fencing_epoch(svc, rid),
+            "result": {"outcome": "COMPLETED"},
+        },
     )
     assert svc.get_task(task_id)["state"] != TaskState.COMPLETED
 
@@ -576,7 +598,13 @@ def test_h019_lease_expired_writer_alive_quarantine(tmp_path):
     svc.execute(
         "set_writer_alive",
         internal_auth(),
-        {"workspace_id": f"ws_{wu}", "alive": True, "quarantine": True},
+        {
+            "workspace_id": f"ws_{wu}",
+            "run_id": run_id,
+            "fencing_epoch": run_fencing_epoch(svc, run_id),
+            "alive": True,
+            "quarantine": True,
+        },
     )
     ws = svc.get_workspace(f"ws_{wu}")
     assert ws["state"] == WorkspaceState.QUARANTINED

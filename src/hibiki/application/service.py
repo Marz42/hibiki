@@ -191,10 +191,11 @@ class ApplicationService:
                     row.acked_at = now
                     notes.append(f"outbox_unknown:{row.outbox_id}")
                 elif row.command_type == "agent.start":
-                    # start(run_id) is idempotent — safe to reclaim
-                    row.status = OutboxStatus.PENDING
-                    row.leased_until = None
-                    notes.append(f"outbox_reclaim_start:{row.outbox_id}")
+                    notes.append(
+                        self._reclaim_or_fence_agent_start(
+                            session, row, reason="outbox_inflight_timeout"
+                        )
+                    )
                 else:
                     row.status = OutboxStatus.PENDING
                     row.leased_until = None
@@ -578,6 +579,65 @@ class ApplicationService:
                 if ws.state != WorkspaceState.QUARANTINED:
                     ws.state = WorkspaceState.READY
                     ws.owner_run_id = None
+
+    def _adapter_may_be_alive(self, run_id: str | None) -> bool:
+        if not run_id:
+            return False
+        insp = self.agent_adapter.inspect(run_id)
+        return bool(insp.get("alive") or insp.get("writer_alive"))
+
+    def _keep_start_occupancy(self, session: Session, run: AgentRunRow) -> None:
+        """Start may have reached the Adapter — never free Workspace yet."""
+        if not run.workspace_id:
+            return
+        ws = session.get(WorkspaceRow, run.workspace_id)
+        if ws and ws.owner_run_id == run.run_id:
+            ws.writer_alive = True
+
+    def _fence_claimed_agent_start(
+        self,
+        session: Session,
+        row: OutboxRow,
+        run: AgentRunRow | None,
+        *,
+        reason: str,
+    ) -> str:
+        """Claimed start is uncertain: DEAD outbox, keep occupancy, enqueue stop."""
+        row.status = OutboxStatus.DEAD
+        row.leased_until = None
+        task = session.get(TaskRow, row.task_id) if row.task_id else None
+        if task is not None:
+            row.revoke_epoch = task.revoke_epoch
+        if run is not None:
+            self._keep_start_occupancy(session, run)
+            if task is not None:
+                self._enqueue_stops_for_runs(
+                    session, task, [run.run_id], reason=reason
+                )
+        return f"outbox_fence_start:{row.outbox_id}"
+
+    def _reclaim_or_fence_agent_start(
+        self,
+        session: Session,
+        row: OutboxRow,
+        *,
+        reason: str,
+    ) -> str:
+        """Distinguish never-sent reclaim from claimed-start verification.
+
+        PENDING reclaim is allowed only when the adapter confirms the executor
+        is not alive. Otherwise preserve the fact that start may have happened.
+        """
+        payload = json.loads(row.payload_json)
+        run_id = payload.get("run_id")
+        run = session.get(AgentRunRow, run_id) if run_id else None
+        if self._adapter_may_be_alive(run_id):
+            return self._fence_claimed_agent_start(
+                session, row, run, reason=reason
+            )
+        row.status = OutboxStatus.PENDING
+        row.leased_until = None
+        return f"outbox_reclaim_start:{row.outbox_id}"
 
     def _recover_work_unit_after_lost_run(
         self, session: Session, run: AgentRunRow
@@ -1687,12 +1747,48 @@ class ApplicationService:
                 return False
         return True
 
+    def _assert_run_write_binding(
+        self,
+        session: Session,
+        auth: AuthContext,
+        run: AgentRunRow,
+        payload: dict[str, Any],
+        *,
+        require_fencing: bool = True,
+    ) -> None:
+        """Bind Internal run writes to principal / task / run / fencing epoch."""
+        task = self._get_task(session, run.task_id)
+        if auth.principal_id != task.principal_id:
+            raise AuthorizationError(
+                "run principal mismatch", code="authorization_denied"
+            )
+        if require_fencing:
+            if "fencing_epoch" not in payload:
+                raise ConflictError(
+                    "fencing_epoch required", code="fencing_required"
+                )
+            if int(payload["fencing_epoch"]) != int(run.fencing_epoch):
+                raise ConflictError(
+                    "fencing epoch mismatch", code="fencing_conflict"
+                )
+        payload_task_id = payload.get("task_id")
+        if payload_task_id is not None and str(payload_task_id) != run.task_id:
+            raise AuthorizationError(
+                "run task mismatch", code="authorization_denied"
+            )
+        payload_run_id = payload.get("run_id")
+        if payload_run_id is not None and str(payload_run_id) != run.run_id:
+            raise AuthorizationError(
+                "run id mismatch", code="authorization_denied"
+            )
+
     def _submit_result(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         run = session.get(AgentRunRow, payload["run_id"])
         if run is None:
             raise NotFoundError("run not found", code="run_not_found")
+        self._assert_run_write_binding(session, auth, run, payload)
         task = self._get_task(session, run.task_id)
 
         # fencing / late arrival
@@ -1725,10 +1821,6 @@ class ApplicationService:
         if is_terminal_run(AgentRunStatus(run.status)):
             # already terminal — do not revive
             raise PreconditionError("run already terminal", code="run_terminal")
-
-        expected_epoch = payload.get("fencing_epoch")
-        if expected_epoch is not None and int(expected_epoch) != run.fencing_epoch:
-            raise ConflictError("fencing epoch mismatch", code="fencing_conflict")
 
         result = payload.get("result") or {}
         outcome = result.get("outcome") or "COMPLETED"
@@ -1932,6 +2024,7 @@ class ApplicationService:
                         run_id=run.run_id,
                         result_ref=run.result_ref,
                         verdict=str(verdict),
+                        sequence_no=self._next_event_seq(session, task_id),
                         created_at=now,
                     )
                 )
@@ -2126,9 +2219,10 @@ class ApplicationService:
     def _invalidate_pending_outbox(self, session: Session, task: TaskRow) -> None:
         """Revoke unsent starts and unsent external dispatches on pause/cancel/gate.
 
-        PENDING agent.start: confirmed unsent — CANCEL CREATED and free Workspace.
-        IN_FLIGHT agent.start: start may already have reached the Adapter — keep
-        occupancy, enqueue stop, never release writer solely because Run is CREATED.
+        PENDING agent.start + adapter not alive: confirmed unsent — CANCEL CREATED
+        and free Workspace.
+        Claimed / adapter-may-be-alive agent.start: keep occupancy, enqueue stop;
+        never release writer solely because Run is CREATED.
         """
         inflight_start_runs: list[str] = []
         for ob in session.scalars(
@@ -2151,32 +2245,26 @@ class ApplicationService:
                 ob.acked_at = self.clock.now()
                 continue
 
-            if (
-                ob.status == OutboxStatus.IN_FLIGHT
-                and ob.command_type == "agent.start"
-            ):
-                payload = json.loads(ob.payload_json)
-                run_id = payload.get("run_id")
-                ob.status = OutboxStatus.DEAD
-                ob.revoke_epoch = task.revoke_epoch
-                if run_id:
-                    inflight_start_runs.append(run_id)
-                    run = session.get(AgentRunRow, run_id)
-                    # Do not CANCELLED+release: process may already be live.
-                    # Keep CREATED/RUNNING occupancy until stop confirms exit.
-                    if run is not None and run.workspace_id:
-                        ws = session.get(WorkspaceRow, run.workspace_id)
-                        if ws and ws.owner_run_id == run.run_id:
-                            ws.writer_alive = True
-                continue
-
-            ob.status = OutboxStatus.DEAD
-            ob.revoke_epoch = task.revoke_epoch
             if ob.command_type == "agent.start":
                 payload = json.loads(ob.payload_json)
-                run = session.get(AgentRunRow, payload.get("run_id"))
+                run_id = payload.get("run_id")
+                run = session.get(AgentRunRow, run_id) if run_id else None
+                # IN_FLIGHT or adapter-alive PENDING: start may already have happened
+                if ob.status == OutboxStatus.IN_FLIGHT or self._adapter_may_be_alive(
+                    run_id
+                ):
+                    ob.status = OutboxStatus.DEAD
+                    ob.revoke_epoch = task.revoke_epoch
+                    if run_id:
+                        inflight_start_runs.append(run_id)
+                        if run is not None:
+                            self._keep_start_occupancy(session, run)
+                    continue
+
+                # Confirmed unsent — free occupancy for later redisatch
+                ob.status = OutboxStatus.DEAD
+                ob.revoke_epoch = task.revoke_epoch
                 if run is not None and run.status == AgentRunStatus.CREATED:
-                    # Confirmed unsent — free occupancy for later redisatch
                     run.status = AgentRunStatus.CANCELLED
                     run.finished_at = self.clock.now()
                     run.terminal_reason = "start_revoked"
@@ -2187,7 +2275,11 @@ class ApplicationService:
                             wu.status = WorkUnitStatus.PENDING
                             wu.blocked_reason = None
                             wu.active_run_id = None
-            elif ob.command_type == "side_effect.dispatch":
+                continue
+
+            ob.status = OutboxStatus.DEAD
+            ob.revoke_epoch = task.revoke_epoch
+            if ob.command_type == "side_effect.dispatch":
                 payload = json.loads(ob.payload_json)
                 effect = session.get(SideEffectRow, payload.get("effect_id"))
                 if effect and effect.state == SideEffectState.DISPATCHING:
@@ -2311,22 +2403,58 @@ class ApplicationService:
             )
         return row
 
+    def _current_delivery_hashes(
+        self, session: Session, nodes: list[dict[str, Any]]
+    ) -> set[str]:
+        """Hashes currently delivered by DONE work units on the active plan."""
+        hashes: set[str] = set()
+        for node in nodes:
+            wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
+            if wu is None or wu.status != WorkUnitStatus.DONE:
+                continue
+            if wu.verified_artifact_hash:
+                hashes.add(str(wu.verified_artifact_hash))
+        return hashes
+
     def _latest_criterion_evidence(
-        self, session: Session, task_id: str, criterion_id: str, wu_ids: set[str]
+        self,
+        session: Session,
+        task_id: str,
+        criterion_id: str,
+        wu_ids: set[str],
+        delivery_hashes: set[str],
     ) -> AcceptanceEvidenceRow | None:
+        """Select evidence by criterion + current delivery hash; order by Core seq."""
         rows = session.scalars(
             select(AcceptanceEvidenceRow)
             .where(
                 AcceptanceEvidenceRow.task_id == task_id,
                 AcceptanceEvidenceRow.criterion_id == criterion_id,
             )
-            .order_by(AcceptanceEvidenceRow.created_at.desc())
+            .order_by(
+                AcceptanceEvidenceRow.sequence_no.desc(),
+                AcceptanceEvidenceRow.created_at.desc(),
+            )
         ).all()
         for row in rows:
             if row.work_unit_id and row.work_unit_id not in wu_ids:
                 continue
+            if delivery_hashes and row.artifact_hash not in delivery_hashes:
+                continue
             return row
         return None
+
+    def _evidence_item_from_row(
+        self, criterion_id: str, ev_row: AcceptanceEvidenceRow
+    ) -> dict[str, Any]:
+        return {
+            "criterion_id": criterion_id,
+            "work_unit_id": ev_row.work_unit_id,
+            "result_ref": ev_row.result_ref,
+            "artifact_hash": ev_row.artifact_hash,
+            "verdict": ev_row.verdict,
+            "run_id": ev_row.run_id,
+        }
 
     def _build_acceptance_evidence(
         self,
@@ -2336,9 +2464,41 @@ class ApplicationService:
         required: list[dict[str, Any]],
         extra_evidence: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Map criteria via evidence records; Artifact hash is identity only."""
-        evidence: list[dict[str, Any]] = []
+        """Map criteria via current delivery + verification; extras cannot override."""
         current_wu_ids = {n["work_unit_id"] for n in nodes}
+        delivery_hashes = self._current_delivery_hashes(session, nodes)
+
+        default_by_cid: dict[str, dict[str, Any]] = {}
+        for crit in required:
+            cid = str(crit["criterion_id"])
+            ev_row = self._latest_criterion_evidence(
+                session, task_id, cid, current_wu_ids, delivery_hashes
+            )
+            if ev_row is not None:
+                default_by_cid[cid] = self._evidence_item_from_row(cid, ev_row)
+                continue
+            # Fallback: current-plan DONE WU with explicit PASS + registered hash
+            for node in nodes:
+                wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
+                if wu is None or wu.status != WorkUnitStatus.DONE:
+                    continue
+                if wu.selected_verdict not in {Verdict.PASS, "PASS"}:
+                    continue
+                if not wu.verified_artifact_hash:
+                    continue
+                if delivery_hashes and wu.verified_artifact_hash not in delivery_hashes:
+                    continue
+                self._resolve_registered_artifact(
+                    session, task_id, wu.verified_artifact_hash
+                )
+                default_by_cid[cid] = {
+                    "criterion_id": cid,
+                    "work_unit_id": wu.work_unit_id,
+                    "result_ref": wu.selected_result_ref,
+                    "artifact_hash": wu.verified_artifact_hash,
+                    "verdict": wu.selected_verdict,
+                }
+                break
 
         for item in extra_evidence:
             cid = item.get("criterion_id")
@@ -2348,85 +2508,45 @@ class ApplicationService:
                     "extra evidence requires criterion_id and artifact_hash",
                     code="missing_evidence",
                 )
-            self._resolve_registered_artifact(session, task_id, str(artifact_hash))
-            # Client cannot supply verdict — look up registered evidence for this hash
+            cid_s = str(cid)
+            artifact_s = str(artifact_hash)
+            self._resolve_registered_artifact(session, task_id, artifact_s)
+            default = default_by_cid.get(cid_s)
+            if default is None or default.get("artifact_hash") != artifact_s:
+                raise PreconditionError(
+                    f"artifact {artifact_s} is not the current delivery for criterion {cid_s}",
+                    code="evidence_not_current",
+                )
+            # Currency check: registered evidence for this criterion/hash must apply
             ev_row = session.scalars(
                 select(AcceptanceEvidenceRow)
                 .where(
                     AcceptanceEvidenceRow.task_id == task_id,
-                    AcceptanceEvidenceRow.criterion_id == str(cid),
-                    AcceptanceEvidenceRow.artifact_hash == str(artifact_hash),
+                    AcceptanceEvidenceRow.criterion_id == cid_s,
+                    AcceptanceEvidenceRow.artifact_hash == artifact_s,
                 )
-                .order_by(AcceptanceEvidenceRow.created_at.desc())
+                .order_by(
+                    AcceptanceEvidenceRow.sequence_no.desc(),
+                    AcceptanceEvidenceRow.created_at.desc(),
+                )
             ).first()
             if ev_row is None:
                 raise PreconditionError(
-                    f"no verification evidence for criterion {cid} / {artifact_hash}",
+                    f"no verification evidence for criterion {cid_s} / {artifact_s}",
                     code="missing_evidence",
                 )
             if ev_row.work_unit_id and ev_row.work_unit_id not in current_wu_ids:
                 raise PreconditionError(
-                    f"artifact {artifact_hash} is not from the current plan deliverables",
+                    f"artifact {artifact_s} is not from the current plan deliverables",
                     code="evidence_not_current",
                 )
-            evidence.append(
-                {
-                    "criterion_id": str(cid),
-                    "work_unit_id": ev_row.work_unit_id,
-                    "result_ref": ev_row.result_ref,
-                    "artifact_hash": ev_row.artifact_hash,
-                    "verdict": ev_row.verdict,
-                    "run_id": ev_row.run_id,
-                }
-            )
+            if delivery_hashes and artifact_s not in delivery_hashes:
+                raise PreconditionError(
+                    f"artifact {artifact_s} is not the current delivery for criterion {cid_s}",
+                    code="evidence_not_current",
+                )
 
-        covered = {str(e["criterion_id"]) for e in evidence if e.get("criterion_id")}
-        for crit in required:
-            cid = str(crit["criterion_id"])
-            if cid in covered:
-                continue
-            # Prefer structured evidence records from current-plan work units
-            ev_row = self._latest_criterion_evidence(
-                session, task_id, cid, current_wu_ids
-            )
-            if ev_row is not None:
-                evidence.append(
-                    {
-                        "criterion_id": cid,
-                        "work_unit_id": ev_row.work_unit_id,
-                        "result_ref": ev_row.result_ref,
-                        "artifact_hash": ev_row.artifact_hash,
-                        "verdict": ev_row.verdict,
-                        "run_id": ev_row.run_id,
-                    }
-                )
-                covered.add(cid)
-                continue
-            # Fallback: current-plan DONE WU with explicit PASS + registered hash
-            # only when no FAIL evidence exists for the criterion
-            for node in nodes:
-                wu = session.get(WorkUnitExecutionRow, node["work_unit_id"])
-                if wu is None or wu.status != WorkUnitStatus.DONE:
-                    continue
-                if wu.selected_verdict not in {Verdict.PASS, "PASS"}:
-                    continue
-                if not wu.verified_artifact_hash:
-                    continue
-                self._resolve_registered_artifact(
-                    session, task_id, wu.verified_artifact_hash
-                )
-                evidence.append(
-                    {
-                        "criterion_id": cid,
-                        "work_unit_id": wu.work_unit_id,
-                        "result_ref": wu.selected_result_ref,
-                        "artifact_hash": wu.verified_artifact_hash,
-                        "verdict": wu.selected_verdict,
-                    }
-                )
-                covered.add(cid)
-                break
-        return evidence
+        return [default_by_cid[str(c["criterion_id"])] for c in required if str(c["criterion_id"]) in default_by_cid]
 
     def _prepare_acceptance(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
@@ -2972,6 +3092,21 @@ class ApplicationService:
         ws = session.get(WorkspaceRow, payload["workspace_id"])
         if ws is None:
             raise NotFoundError("workspace not found")
+        run_id = payload.get("run_id") or ws.owner_run_id
+        if not run_id:
+            raise PreconditionError(
+                "workspace has no owner run", code="workspace_unbound"
+            )
+        run = session.get(AgentRunRow, run_id)
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        if ws.owner_run_id and ws.owner_run_id != run.run_id:
+            raise AuthorizationError(
+                "workspace owner mismatch", code="authorization_denied"
+            )
+        bind_payload = dict(payload)
+        bind_payload.setdefault("run_id", run.run_id)
+        self._assert_run_write_binding(session, auth, run, bind_payload)
         ws.writer_alive = bool(payload.get("alive", True))
         if payload.get("quarantine"):
             ws.state = WorkspaceState.QUARANTINED
@@ -2988,7 +3123,8 @@ class ApplicationService:
     ) -> CommandResult:
         run = session.get(AgentRunRow, payload["run_id"])
         if run is None:
-            raise NotFoundError("run not found")
+            raise NotFoundError("run not found", code="run_not_found")
+        self._assert_run_write_binding(session, auth, run, payload)
         now = self.clock.now()
         run.last_heartbeat_at = now
         run.lease_expires_at = now + timedelta(seconds=DEFAULTS.lease_seconds)
@@ -3075,19 +3211,36 @@ class ApplicationService:
             )
         # Check if proposal tries to change authorization fields
         if payload.get("changes_authorization"):
-            # Must go to contract delta — persist immutable target payload
+            # Must go to contract delta — persist immutable baseline + target
+            active = self._active_contract(session, task.task_id)
+            if active is None:
+                raise PreconditionError("no active contract", code="no_active_contract")
             now = self.clock.now()
             decision_id = new_id("dec")
             delta = payload.get("delta") or {}
+            baseline_version = int(active.contract_version)
+            baseline_hash = active.content_hash
+            merged = self._merge_contract_content(
+                json.loads(active.content_json), delta
+            )
+            approved_target_hash = content_hash(merged)
+            target_version = baseline_version + 1
+            envelope = {
+                "delta": delta,
+                "baseline_contract_version": baseline_version,
+                "baseline_contract_hash": baseline_hash,
+                "approved_merged_hash": approved_target_hash,
+            }
             session.add(
                 DecisionRow(
                     decision_id=decision_id,
                     task_id=task.task_id,
                     decision_kind=DecisionKind.CONTRACT_DELTA,
                     target_ref="delta",
-                    target_version=(task.contract_version or 0) + 1,
-                    target_hash=content_hash(delta),
-                    payload_json=canonical_json(delta),
+                    target_version=target_version,
+                    target_hash=approved_target_hash,
+                    contract_version=baseline_version,
+                    payload_json=canonical_json(envelope),
                     status=DecisionStatus.PENDING,
                     created_at=now,
                     expires_at=now + timedelta(hours=DEFAULTS.decision_ttl_hours),
@@ -3118,6 +3271,75 @@ class ApplicationService:
                 }
             )
         return self._activate_plan(session, auth, payload)
+
+    def _merge_contract_content(
+        self, base: dict[str, Any], delta: dict[str, Any]
+    ) -> dict[str, Any]:
+        merged = dict(base)
+        if "resource_limits" in delta:
+            limits = dict(merged.get("resource_limits") or {})
+            limits.update(delta["resource_limits"] or {})
+            merged["resource_limits"] = limits
+        for key in (
+            "objective",
+            "in_scope",
+            "out_of_scope",
+            "constraints",
+            "assumptions",
+            "deliverables",
+            "acceptance_criteria",
+            "allowed_side_effects",
+            "permission_ceiling",
+            "human_gates",
+        ):
+            if key in delta:
+                merged[key] = delta[key]
+        return merged
+
+    def _parse_contract_delta_payload(
+        self, decision: DecisionRow
+    ) -> tuple[dict[str, Any], int | None, str | None]:
+        raw = json.loads(decision.payload_json or "{}")
+        if isinstance(raw, dict) and "delta" in raw and isinstance(raw["delta"], dict):
+            baseline_v = raw.get("baseline_contract_version", decision.contract_version)
+            baseline_h = raw.get("baseline_contract_hash")
+            return (
+                raw["delta"],
+                int(baseline_v) if baseline_v is not None else None,
+                str(baseline_h) if baseline_h else None,
+            )
+        # Legacy: payload was the delta object alone
+        return raw, decision.contract_version, None
+
+    def _invalidate_stale_contract_delta(
+        self,
+        session: Session,
+        task: TaskRow,
+        decision: DecisionRow,
+        gates: list[GateRow],
+        *,
+        auth_actor: str | None,
+        code: str,
+    ) -> None:
+        """Keep APPROVED history; close apply gate and emit domain event."""
+        now = self.clock.now()
+        for gate in gates:
+            gate.lifecycle = GateLifecycle.RESOLVED
+            gate.resolved_at = now
+        decision.gate_lifecycle = GateLifecycle.RESOLVED
+        self._append_event(
+            session,
+            task.task_id,
+            "contract.delta_apply_rejected_stale",
+            auth_actor=auth_actor,
+            payload={
+                "decision_id": decision.decision_id,
+                "code": code,
+                "target_version": decision.target_version,
+                "current_contract_version": task.contract_version,
+            },
+        )
+        self._recompute_runnable_state(session, task)
 
     def _apply_contract_delta(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
@@ -3151,39 +3373,86 @@ class ApplicationService:
             raise PreconditionError(
                 "contract delta payload missing", code="delta_payload_missing"
             )
-        delta = json.loads(decision.payload_json)
+        delta, baseline_v, baseline_h = self._parse_contract_delta_payload(decision)
         active = self._active_contract(session, task.task_id)
         if active is None:
             raise PreconditionError("no active contract", code="no_active_contract")
-        base = json.loads(active.content_json)
-        # Merge resource_limits and other known fields from delta
-        merged = dict(base)
-        if "resource_limits" in delta:
-            limits = dict(merged.get("resource_limits") or {})
-            limits.update(delta["resource_limits"] or {})
-            merged["resource_limits"] = limits
-        for key in (
-            "objective",
-            "in_scope",
-            "out_of_scope",
-            "constraints",
-            "assumptions",
-            "deliverables",
-            "acceptance_criteria",
-            "allowed_side_effects",
-            "permission_ceiling",
-            "human_gates",
+
+        # CAS: baseline must still be the active contract; never renumber target
+        if baseline_v is not None and (
+            int(task.contract_version or 0) != int(baseline_v)
+            or int(active.contract_version) != int(baseline_v)
         ):
-            if key in delta:
-                merged[key] = delta[key]
-        now = self.clock.now()
+            self._invalidate_stale_contract_delta(
+                session,
+                task,
+                decision,
+                gates,
+                auth_actor=auth.actor_id,
+                code="baseline_stale",
+            )
+            return CommandResult.failure(
+                "baseline_stale",
+                "baseline contract superseded",
+                data={"decision_id": decision.decision_id},
+            )
+        if baseline_h and active.content_hash != baseline_h:
+            self._invalidate_stale_contract_delta(
+                session,
+                task,
+                decision,
+                gates,
+                auth_actor=auth.actor_id,
+                code="baseline_stale",
+            )
+            return CommandResult.failure(
+                "baseline_stale",
+                "baseline contract content changed",
+                data={"decision_id": decision.decision_id},
+            )
+
         version = int(decision.target_version)
+        existing = session.scalars(
+            select(ContractRow).where(
+                ContractRow.task_id == task.task_id,
+                ContractRow.contract_version == version,
+            )
+        ).first()
+        if existing is not None:
+            self._invalidate_stale_contract_delta(
+                session,
+                task,
+                decision,
+                gates,
+                auth_actor=auth.actor_id,
+                code="target_version_taken",
+            )
+            return CommandResult.failure(
+                "target_version_taken",
+                "target contract version already exists",
+                data={"decision_id": decision.decision_id, "target_version": version},
+            )
+
+        if baseline_v is not None:
+            base_row = session.scalars(
+                select(ContractRow).where(
+                    ContractRow.task_id == task.task_id,
+                    ContractRow.contract_version == int(baseline_v),
+                )
+            ).one()
+            base = json.loads(base_row.content_json)
+        else:
+            base = json.loads(active.content_json)
+        merged = self._merge_contract_content(base, delta)
+        now = self.clock.now()
         ch = content_hash(merged)
-        if ch != decision.target_hash and decision.target_hash != content_hash(
-            json.loads(decision.payload_json)
-        ):
-            # target_hash was over the delta object at propose time; re-hash merged
-            pass
+        if ch != decision.target_hash:
+            # Legacy decisions hashed the delta object; reject only when envelope
+            # promised a merged hash (approved_merged_hash path).
+            if baseline_h is not None:
+                raise ConflictError(
+                    "merged contract hash mismatch", code="target_hash_conflict"
+                )
         # Supersede previous active
         prev = session.get(ActiveContractMarker, task.task_id)
         if prev:
@@ -3376,8 +3645,20 @@ class ApplicationService:
             row.status = OutboxStatus.ACKED
             row.acked_at = self.clock.now()
             return
-        # agent.start: bounded backoff via DEAD after repeated fails — keep PENDING
-        # with future lease so drain doesn't tight-loop
+        if row.command_type == "agent.start":
+            if row.status == OutboxStatus.DEAD:
+                return
+            # Adapter may already have started even if ACK/tx failed — inspect before
+            # erasing the claim into a "never sent" PENDING reclaim.
+            note = self._reclaim_or_fence_agent_start(
+                session, row, reason="start_dispatch_failed"
+            )
+            if note.startswith("outbox_reclaim_start:"):
+                row.leased_until = self.clock.now() + timedelta(
+                    seconds=DEFAULTS.retry_backoff_seconds[0]
+                )
+            return
+        # other outbox types: bounded backoff via PENDING
         if row.status == OutboxStatus.DEAD:
             return
         row.status = OutboxStatus.PENDING
@@ -3418,10 +3699,7 @@ class ApplicationService:
                     row.revoke_epoch = task.revoke_epoch
             # Adapter already started — keep occupancy and ensure stop
             if run is not None and task is not None:
-                if run.workspace_id:
-                    ws = session.get(WorkspaceRow, run.workspace_id)
-                    if ws and ws.owner_run_id == run.run_id:
-                        ws.writer_alive = True
+                self._keep_start_occupancy(session, run)
                 self._enqueue_stops_for_runs(
                     session, task, [run.run_id], reason="start_ack_fenced"
                 )
