@@ -329,3 +329,115 @@ def test_duplicate_criterion_evidence_is_rejected_atomically(tmp_path):
     )
     assert result.error_code == "duplicate_evidence"
     assert svc.get_work_unit(wu)["status"] == "RUNNING"
+
+
+def test_start_stop_mutex_prevents_double_writer_after_internal_interleave(tmp_path):
+    """Revoke-check + register stay atomic under the adapter lock."""
+    svc, ctx = make_core(tmp_path, dispatch_enabled=False)
+    human = human_auth()
+    tid, wu = approve_flow(svc, human)
+    old = svc.execute("dispatch_ready_runs", human, {"task_id": tid}).data["created_runs"][0]
+    item = svc.executor.run(svc._claim_one_outbox)
+    assert item is not None
+
+    entered = Event()
+    release = Event()
+    stop_done = Event()
+
+    def after_check():
+        entered.set()
+        assert release.wait(10), "start hook was not released"
+
+    ctx["agent"].start_after_revoke_check_hook = after_check
+
+    def run_start():
+        ctx["agent"].start(item["payload"])
+
+    def run_stop():
+        ctx["agent"].stop(old, "interleave")
+        stop_done.set()
+
+    starter = Thread(target=run_start)
+    stopper = Thread(target=run_stop)
+    starter.start()
+    assert entered.wait(5)
+    stopper.start()
+    # Stop must block on the same lock while start is paused inside the critical section.
+    assert not stop_done.wait(0.2)
+    release.set()
+    starter.join(5)
+    stopper.join(5)
+    assert not starter.is_alive() and not stopper.is_alive()
+    assert stop_done.is_set()
+
+    # Start registered then stop revoked under mutual exclusion — old writer is dead.
+    assert old in ctx["agent"].started
+    assert old in ctx["agent"].revoked_ids
+    assert not ctx["agent"].is_alive(old)
+
+    gate = svc.execute("open_blocking_gate", human, {"task_id": tid, "reason": "hold"})
+    svc.execute(
+        "resolve_decision",
+        human,
+        {"decision_id": gate.data["decision_id"], "choice": "APPROVE"},
+    )
+    svc.dispatch_enabled = True
+    svc.drain_outbox()
+    created = svc.execute("dispatch_ready_runs", human, {"task_id": tid}).data["created_runs"]
+    assert len(created) == 1
+    assert created[0] != old
+    alive = [rid for rid in ctx["agent"].started if ctx["agent"].is_alive(rid)]
+    assert len(alive) <= 1
+    assert svc.get_workspace(f"ws_{wu}")["owner_run_id"] == created[0]
+
+
+def test_start_rechecks_revoke_before_register(tmp_path):
+    """If revoke lands after the first check, start must not create a live writer."""
+    agent = make_core(tmp_path)[1]["agent"]
+
+    def inject_revoke():
+        agent.revoked_ids.add("run_x")
+
+    agent.start_after_revoke_check_hook = inject_revoke
+    result = agent.start({"run_id": "run_x"})
+    assert result["start_revoked"] is True
+    assert result["alive"] is False
+    assert not agent.is_alive("run_x")
+    assert "run_x" not in agent.started
+
+
+def test_revoked_start_preserves_stubborn_writer_liveness(tmp_path):
+    agent = make_core(tmp_path)[1]["agent"]
+    rid = "run_stubborn"
+    agent.keep_alive_after_lease.add(rid)
+    first = agent.start({"run_id": rid})
+    assert first["alive"] is True
+    stopped = agent.stop(rid, "lease")
+    assert stopped["alive"] is True
+    assert stopped["writer_alive"] is True
+    assert stopped["start_revoked"] is True
+    replay = agent.start({"run_id": rid})
+    assert replay["start_revoked"] is True
+    assert replay["alive"] is True
+    assert replay["writer_alive"] is True
+    assert agent.is_alive(rid)
+
+
+def test_bound_user_agent_cannot_confirm_run_exit(tmp_path):
+    from hibiki.domain.enums import ActorType
+
+    svc, ctx = make_core(tmp_path)
+    human = human_auth()
+    tid, wu = approve_flow(svc, human)
+    rid = svc.execute("dispatch_ready_runs", human, {"task_id": tid}).data["created_runs"][0]
+    bound = run_auth(svc, rid)
+    ua_bound = replace(bound, actor_type=ActorType.USER_AGENT, auth_context_id="ua_bound")
+    r = svc.execute(
+        "confirm_run_exit",
+        ua_bound,
+        {"run_id": rid, "fencing_epoch": bound.bound_fencing_epoch},
+    )
+    assert not r.ok and r.error_code == "authorization_denied"
+    assert ctx["agent"].stopped == []
+    assert ctx["agent"].is_alive(rid)
+    assert svc.get_workspace(f"ws_{wu}")["owner_run_id"] == rid

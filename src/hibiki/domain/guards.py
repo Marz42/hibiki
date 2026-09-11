@@ -27,6 +27,10 @@ INTERNAL_ONLY_OPS = frozenset(
     }
 )
 
+# Exit confirm: Human (principal) or Internal (run-bound); never User Agent
+EXIT_CONFIRM_OPS = frozenset({"confirm_run_exit"})
+
+
 HUMAN_DECISION_KINDS = frozenset(
     {
         DecisionKind.CONTRACT_APPROVAL,
@@ -63,6 +67,14 @@ def require_interrupt_scope(auth: AuthContext, operation: str) -> None:
         )
 
 
+def require_exit_confirm_actor(auth: AuthContext, operation: str) -> None:
+    if auth.actor_type not in {ActorType.HUMAN, ActorType.INTERNAL}:
+        raise AuthorizationError(
+            f"operation {operation!r} requires Human or Internal actor; got {auth.actor_type}",
+            code="authorization_denied",
+        )
+
+
 def guard_operation(auth: AuthContext, operation: str) -> None:
     if operation in HUMAN_ONLY_OPS:
         require_human(auth, operation)
@@ -70,6 +82,8 @@ def guard_operation(auth: AuthContext, operation: str) -> None:
         require_interrupt_scope(auth, operation)
     elif operation in INTERNAL_ONLY_OPS:
         require_internal(auth, operation)
+    elif operation in EXIT_CONFIRM_OPS:
+        require_exit_confirm_actor(auth, operation)
 
 
 def guard_human_decision(auth: AuthContext, kind: DecisionKind | str) -> None:

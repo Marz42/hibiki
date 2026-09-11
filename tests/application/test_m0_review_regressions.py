@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from hibiki.application.bootstrap import bootstrap_core
 from hibiki.domain.enums import (
     AgentRunStatus,
     OutboxStatus,
     SideEffectState,
     TaskState,
     WorkUnitStatus,
-    WorkspaceState,
 )
 from hibiki.persistence.session import InstanceLock
 from hibiki.runtime.fake_external import FakeExternalAdapter
@@ -1120,8 +1116,9 @@ def test_p0_reconcile_inflight_start_then_gate_no_double_writer(tmp_path):
     notes = svc.reconcile()
     assert any("outbox_fence_start" in n for n in notes["notes"])
     assert svc.count_outbox(status=OutboxStatus.IN_FLIGHT, task_id=task_id) == 0
-    from hibiki.persistence.models import OutboxRow
     from sqlalchemy import select
+
+    from hibiki.persistence.models import OutboxRow
 
     def _pending_starts(session):
         return [
@@ -1166,11 +1163,10 @@ def test_p0_reconcile_inflight_start_then_gate_no_double_writer(tmp_path):
 
 def test_p1_evidence_sequence_beats_same_created_at_pass(tmp_path):
     """PASS then FAIL at identical FakeClock time — Core sequence selects FAIL."""
-    from hibiki.runtime.clock import FakeClock
-
     from sqlalchemy import select
 
     from hibiki.persistence.models import WorkUnitExecutionRow
+    from hibiki.runtime.clock import FakeClock
 
     clock = FakeClock()
     svc, _ = make_core(tmp_path, clock=clock)

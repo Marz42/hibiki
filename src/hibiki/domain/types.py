@@ -8,7 +8,19 @@ from hibiki.domain.enums import ActorType
 
 @dataclass(frozen=True, slots=True)
 class AuthContext:
-    """Server-filled identity. Client-supplied identity fields are ignored."""
+    """Server-filled identity. Client-supplied identity fields are ignored.
+
+    Runtime run-auth binding
+    ------------------------
+    Internal executor credentials for a concrete Run must carry:
+    - ``bound_task_id`` / ``bound_run_id`` matching the target Run
+    - ``bound_fencing_epoch`` / ``bound_grant_epoch`` matching Run epochs
+    - ``actor_id`` equal to ``run.agent_instance_id``
+
+    Body fields such as ``bound_*`` or ``actor_id`` never override this object.
+    ``confirm_run_exit`` allows Human (task principal) or Internal (run-bound);
+    User Agent is rejected at the operation guard.
+    """
 
     principal_id: str
     actor_id: str
