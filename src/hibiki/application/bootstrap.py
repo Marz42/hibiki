@@ -132,6 +132,7 @@ def bootstrap_core(
         external_adapter,
         dispatch_enabled=dispatch_enabled,
         workspace_root=str(workspace_root),
+        artifacts=artifacts,
     )
     ctx = {
         "engine": engine,

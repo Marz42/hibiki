@@ -1,7 +1,7 @@
 [project]
 name = "hibiki"
 version = "0.1.0"
-description = "HIBIKI — Task-centered agent execution system (M0 deterministic kernel)"
+description = "HIBIKI — Task-centered agent execution system (M0 kernel + M1 real worker)"
 readme = "README.md"
 authors = [
     { name = "marz", email = "marz@work" }
@@ -9,8 +9,17 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.19.2",
+    "httpx>=0.28.1",
     "pydantic>=2.13.5",
     "sqlalchemy>=2.0.52",
+]
+
+[project.optional-dependencies]
+# M1 real worker. The OpenAI SDK 3.x line moved to httpx2; M1 only needs
+# chat.completions, so the adapter talks to the OpenAI-compatible REST API over
+# httpx instead and this extra stays optional.
+openai = [
+    "openai>=3,<4",
 ]
 
 [project.scripts]
@@ -24,6 +33,7 @@ build-backend = "uv_build"
 dev = [
     "httpx>=0.28.1",
     "hypothesis>=6.167.1",
+    "openai>=3,<4",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.6",

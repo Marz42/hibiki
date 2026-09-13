@@ -438,6 +438,11 @@ class ArtifactRow(Base):
     result_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Legacy column; acceptance must use AcceptanceEvidenceRow, not this field.
     verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # M1 content reference (SPEC §11.2 / §11.3): immutable store uri + verified size.
+    artifact_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

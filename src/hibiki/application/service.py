@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
@@ -42,7 +44,7 @@ from hibiki.domain.guards import (
 )
 from hibiki.domain.hashing import canonical_json, content_hash, payload_hash
 from hibiki.domain.plan import PlanEdge, PlanNode, validate_dag
-from hibiki.domain.ports import AgentAdapter, Clock, ExternalAdapter
+from hibiki.domain.ports import AgentAdapter, ArtifactStore, Clock, ExternalAdapter
 from hibiki.domain.transitions import (
     is_terminal_run,
     is_terminal_task,
@@ -96,6 +98,7 @@ class ApplicationService:
         *,
         dispatch_enabled: bool = True,
         workspace_root: str | None = None,
+        artifacts: ArtifactStore | None = None,
     ) -> None:
         self.executor = executor
         self.clock = clock
@@ -103,6 +106,7 @@ class ApplicationService:
         self.external_adapter = external_adapter
         self.dispatch_enabled = dispatch_enabled
         self.workspace_root = workspace_root
+        self._artifacts = artifacts
         self._wake_requested = False
 
     # ------------------------------------------------------------------
@@ -307,6 +311,7 @@ class ApplicationService:
             "record_model_usage": self._record_model_usage,
             "set_writer_alive": self._set_writer_alive,
             "heartbeat": self._heartbeat,
+            "publish_artifact": self._publish_artifact,
             "seed_profile": self._seed_profile,
             "replace_planner_generation": self._replace_planner_generation,
             "submit_plan_proposal": self._submit_plan_proposal,
@@ -4192,6 +4197,189 @@ class ApplicationService:
             return int(session.scalar(select(func.count()).select_from(InboxRow)) or 0)
 
         return self.executor.run(_read)
+
+    # ------------------------------------------------------------------
+    # Artifact publication (SPEC §11.3) — Core-side, worker-callable
+    # ------------------------------------------------------------------
+
+    def _artifact_store(self):
+        if self._artifacts is None:
+            raise PreconditionError("artifact store not configured", code="artifact_store_missing")
+        return self._artifacts
+
+    def _resolve_workspace_relative(self, workspace_id: str, relative_path: str) -> Path:
+        """Resolve a worker-supplied relative path strictly inside the workspace."""
+        from hibiki.tools.paths import PathSafetyError, WorkspacePaths
+
+        if self.workspace_root is None:
+            raise PreconditionError("workspace root not configured", code="workspace_missing")
+        root = Path(self.workspace_root) / workspace_id
+        if not root.is_dir():
+            raise PreconditionError("workspace not materialized", code="workspace_missing")
+        try:
+            with WorkspacePaths(root) as paths:
+                return Path(paths.resolve_for_read(relative_path))
+        except PathSafetyError as exc:
+            raise PreconditionError(f"path refused: {exc}", code="artifact_path_refused") from exc
+        except FileNotFoundError as exc:
+            raise NotFoundError(
+                f"artifact source not found: {relative_path}", code="artifact_source_missing"
+            ) from exc
+
+    def _publish_artifact(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Stage, verify and register an Artifact (SPEC §11.2 / §11.3).
+
+        Ordering is chosen so the crash window cannot produce a registered Artifact whose
+        content is missing: bytes are written and fsynced into the immutable content path
+        *before* the database transaction, and a crash in between leaves only an orphaned
+        content file (scannable, never referenced).
+        """
+        run = session.get(AgentRunRow, payload["run_id"])
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        self._assert_run_write_binding(session, auth, run, payload)
+        task = self._get_task(session, run.task_id)
+        if TaskState(task.state) in {
+            TaskState.WAITING_HUMAN,
+            TaskState.PAUSING,
+            TaskState.PAUSED,
+            TaskState.CANCELLING,
+            TaskState.ABORTED,
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+        }:
+            raise PreconditionError(
+                f"task state {task.state} does not allow artifact publication",
+                code="task_frozen",
+            )
+
+        run_input = session.get(RunInputRow, run.run_id)
+        if run_input is None or not run_input.workspace_id:
+            raise PreconditionError("run has no workspace", code="workspace_missing")
+
+        relative_path = str(payload.get("path") or payload.get("relative_path") or "")
+        if not relative_path:
+            raise PreconditionError("path required", code="artifact_path_required")
+        host_path = self._resolve_workspace_relative(run_input.workspace_id, relative_path)
+        if not host_path.is_file():
+            raise NotFoundError(
+                f"artifact source not found: {relative_path}", code="artifact_source_missing"
+            )
+
+        content = host_path.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        claimed = payload.get("expected_hash") or payload.get("sha256")
+        if claimed is not None and str(claimed) != digest:
+            raise ConflictError(
+                f"artifact hash mismatch: claimed {claimed}, actual {digest}",
+                code="artifact_hash_mismatch",
+            )
+
+        uri = self._artifact_store().put(content, content_hash=digest)
+        now = self.clock.now()
+        row = session.get(ArtifactRow, (task.task_id, digest))
+        created = row is None
+        if row is None:
+            row = ArtifactRow(
+                task_id=task.task_id,
+                artifact_hash=digest,
+                work_unit_id=run.work_unit_id,
+                run_id=run.run_id,
+                result_ref=None,
+                verdict=None,
+                created_at=now,
+            )
+            session.add(row)
+        row.artifact_uri = uri
+        row.size_bytes = len(content)
+        row.source_path = relative_path
+        self._append_event(
+            session,
+            task.task_id,
+            "artifact.published",
+            auth_actor=auth.actor_id,
+            payload={
+                "artifact_hash": digest,
+                "uri": uri,
+                "run_id": run.run_id,
+                "path": relative_path,
+                "size": len(content),
+                "created": created,
+            },
+        )
+        return CommandResult.success(
+            {
+                "artifact_hash": digest,
+                "uri": uri,
+                "task_id": task.task_id,
+                "run_id": run.run_id,
+                "size": len(content),
+                "source_path": relative_path,
+                "created": created,
+            }
+        )
+
+    def get_artifact(self, task_id: str, artifact_hash: str) -> dict[str, Any]:
+        def _read(session: Session) -> dict[str, Any]:
+            row = session.get(ArtifactRow, (task_id, artifact_hash))
+            if row is None:
+                raise NotFoundError("artifact not found", code="artifact_not_found")
+            return {
+                "task_id": row.task_id,
+                "artifact_hash": row.artifact_hash,
+                "uri": row.artifact_uri,
+                "size": row.size_bytes,
+                "mime_type": row.mime_type,
+                "work_unit_id": row.work_unit_id,
+                "run_id": row.run_id,
+                "source_path": row.source_path,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+
+        return self.executor.run(_read)
+
+    def verify_artifact_content(self, task_id: str, artifact_hash: str) -> dict[str, Any]:
+        """Recompute the stored bytes' hash and confirm they match the registration."""
+        import hashlib
+
+        meta = self.get_artifact(task_id, artifact_hash)
+        if not meta["uri"]:
+            return {"verified": False, "reason": "no_uri", "artifact_hash": artifact_hash}
+        try:
+            content = self._artifact_store().get(meta["uri"])
+        except Exception as exc:  # noqa: BLE001
+            return {"verified": False, "reason": f"unreadable:{exc}", "artifact_hash": artifact_hash}
+        actual = hashlib.sha256(content).hexdigest()
+        return {
+            "verified": actual == artifact_hash,
+            "artifact_hash": artifact_hash,
+            "actual_hash": actual,
+            "size": len(content),
+        }
+
+    def list_orphan_artifacts(self) -> list[str]:
+        """Content files present in the store but referenced by no Artifact row."""
+        if self._artifacts is None:
+            return []
+        store_root = Path(self._artifacts.root)
+        if not store_root.is_dir():
+            return []
+
+        def _registered(session: Session) -> set[str]:
+            rows = session.scalars(select(ArtifactRow.artifact_hash)).all()
+            return {str(h) for h in rows}
+
+        registered = self.executor.run(_registered)
+        orphans: list[str] = []
+        for path in sorted(store_root.iterdir()):
+            if not path.is_file() or path.suffix == ".tmp":
+                continue
+            if path.name not in registered:
+                orphans.append(path.name)
+        return orphans
+
 
     def get_run_input(self, auth: AuthContext, run_id: str) -> dict[str, Any]:
         """Return the frozen execution contract for a Run (SPEC §9.2).
