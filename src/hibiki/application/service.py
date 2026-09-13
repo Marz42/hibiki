@@ -63,6 +63,7 @@ from hibiki.persistence.models import (
     AgentProfileRow,
     AgentRunRow,
     ArtifactRow,
+    ContextAppendRow,
     ContextManifestRow,
     ContractRow,
     DecisionRow,
@@ -84,6 +85,72 @@ from hibiki.persistence.models import (
 )
 from hibiki.persistence.session import SerialSessionExecutor
 from hibiki.runtime.clock import as_utc_naive, new_id
+
+
+def _json_list(raw: str | None, key: str | None) -> list[dict[str, Any]]:
+    """Parse a JSON list (or a list stored under ``key``); never raise on bad data."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if key is not None:
+        parsed = parsed.get(key) if isinstance(parsed, dict) else None
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _mandatory_context_bytes(
+    session: Session,
+    mandatory: list[dict[str, Any]],
+    dependency_refs: list[dict[str, Any]],
+    workspace_root: str | None,
+    workspace_id: str | None,
+) -> int:
+    """Measure the fixed inputs so overflow can be refused instead of truncated.
+
+    Only sizes that are knowable before materialization are counted: registered
+    artifact sizes, workspace files named in the refs, and the serialized size of the
+    structured refs themselves. This is a conservative lower bound, not a token count.
+    """
+    total = 0
+    for ref in [*mandatory, *dependency_refs]:
+        total += len(canonical_json(ref).encode("utf-8"))
+    for ref in [*mandatory, *dependency_refs]:
+        kind = ref.get("kind")
+        if kind in {"artifact", "dependency_result"}:
+            digest = ref.get("hash") or ref.get("artifact_hash")
+            if digest:
+                row = session.get(ArtifactRow, (ref.get("task_id"), digest))
+                if row is not None and row.size_bytes:
+                    total += int(row.size_bytes)
+        elif kind == "workspace_file" and ref.get("ref"):
+            if workspace_root and workspace_id:
+                candidate = Path(workspace_root) / workspace_id / str(ref["ref"])
+                try:
+                    if candidate.is_file():
+                        total += candidate.stat().st_size
+                except OSError:
+                    pass
+    return total
+
+
+def _looks_like_relative_path(ref: str) -> bool:
+    """True for refs meant to be read inside the Run's own workspace."""
+    if not ref or ref.startswith(("artifact://", "task:", "contract:", "plan:", "run:", "msg:")):
+        return False
+    return not ref.startswith("/")
+
+
+def _int_or(value: Any, fallback: int) -> int:
+    """Parse an optional positive integer budget; ignore junk instead of crashing."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
+    return parsed if parsed > 0 else int(fallback)
 
 
 class ApplicationService:
@@ -312,6 +379,7 @@ class ApplicationService:
             "set_writer_alive": self._set_writer_alive,
             "heartbeat": self._heartbeat,
             "publish_artifact": self._publish_artifact,
+            "context_append": self._context_append,
             "seed_profile": self._seed_profile,
             "replace_planner_generation": self._replace_planner_generation,
             "submit_plan_proposal": self._submit_plan_proposal,
@@ -1700,17 +1768,43 @@ class ApplicationService:
                 continue
 
             fencing = (ws.fencing_epoch + 1) if ws else 1
+            profile_version = int(payload.get("profile_version") or 1)
+            _, resource_limits = self._contract_and_limits(session, task)
             manifest_id = new_id("ctx")
-            manifest = {
-                "context_manifest_id": manifest_id,
-                "task_id": task.task_id,
-                "run_id": run_id,
-                "contract_version": task.contract_version,
-                "plan_version": task.plan_version,
-                "context_policy": "FRESH",
-                "mandatory_refs": [],
-                "optional_refs": [],
-            }
+            manifest = self._build_context_manifest(
+                session,
+                task=task,
+                run_id=run_id,
+                manifest_id=manifest_id,
+                wu_id=wu_id,
+                plan_spec_version=plan_spec_version,
+                profile_id="local",
+                profile_version=profile_version,
+                workspace_id=ws.workspace_id if ws else None,
+                resource_limits=resource_limits,
+            )
+            budget = int(manifest["context_budget"]["max_materialized_bytes"])
+            required = int(manifest.get("mandatory_bytes") or 0)
+            if required > budget:
+                # SPEC §10.2: mandatory context over the window must never be silently
+                # trimmed. Block the Work Unit and surface it instead of running with
+                # incomplete inputs.
+                wu.status = WorkUnitStatus.BLOCKED
+                wu.blocked_reason = "context_overflow"
+                self._append_event(
+                    session,
+                    task.task_id,
+                    "work_unit.blocked",
+                    auth_actor=auth.actor_id,
+                    payload={
+                        "work_unit_id": wu_id,
+                        "reason": "context_overflow",
+                        "mandatory_bytes": required,
+                        "context_budget": budget,
+                    },
+                )
+                continue
+
             mh = content_hash(manifest)
             session.add(
                 ContextManifestRow(
@@ -1724,7 +1818,6 @@ class ApplicationService:
                     created_at=now,
                 )
             )
-            profile_version = int(payload.get("profile_version") or 1)
             run = AgentRunRow(
                 run_id=run_id,
                 task_id=task.task_id,
@@ -1878,24 +1971,22 @@ class ApplicationService:
         agent_instance_id: str,
     ) -> RunExecutionSpec:
         """Freeze everything the worker is allowed to do for this Run (SPEC §9.2)."""
-        contract = session.scalars(
-            select(ContractRow)
-            .where(
-                ContractRow.task_id == task.task_id,
-                ContractRow.contract_version == task.contract_version,
-            )
-            .order_by(ContractRow.contract_version.desc())
-        ).first()
-        ceiling: dict[str, Any] = {}
-        if contract is not None:
-            content = json.loads(contract.content_json)
-            raw_ceiling = content.get("permission_ceiling")
-            if isinstance(raw_ceiling, dict):
-                ceiling = dict(raw_ceiling)
-            elif raw_ceiling is not None:
-                ceiling = {"tools": raw_ceiling}
+        ceiling, resource_limits = self._contract_and_limits(session, task)
 
         granted_tools, unknown_tools = normalize_ceiling_tools(ceiling)
+        # Contract limits may only tighten the system defaults (SPEC §16.2 / §27).
+        wall_timeout = min(
+            _int_or(resource_limits.get("wall_timeout_seconds"), DEFAULTS.run_wall_timeout_seconds),
+            DEFAULTS.run_wall_timeout_seconds,
+        )
+        max_turns = min(
+            _int_or(resource_limits.get("max_turns"), DEFAULTS.max_run_model_turns),
+            DEFAULTS.max_run_model_turns,
+        )
+        model_call_limit = min(
+            _int_or(resource_limits.get("max_model_calls"), DEFAULTS.max_task_model_calls),
+            int(task.model_call_limit),
+        )
 
         spec_row = session.scalars(
             select(WorkUnitSpecRow).where(
@@ -1932,15 +2023,313 @@ class ApplicationService:
             grant_epoch=int(task.revoke_epoch),
             fencing_epoch=int(fencing),
             revoke_epoch=int(task.revoke_epoch),
-            model_call_limit=int(task.model_call_limit),
-            max_turns=int(DEFAULTS.max_run_model_turns),
-            wall_timeout_seconds=int(DEFAULTS.run_wall_timeout_seconds),
+            model_call_limit=model_call_limit,
+            max_turns=max_turns,
+            wall_timeout_seconds=wall_timeout,
             objective=wu_objective,
             work_type=str(wu_content.get("work_type") or ""),
             goal_label=str(wu_content.get("work_type") or wu_objective),
             context_policy=str(wu_content.get("context_policy") or "FRESH"),
-            metadata={"unknown_ceiling_tools": unknown_tools},
+            metadata={
+                "unknown_ceiling_tools": unknown_tools,
+                "resource_limits": resource_limits,
+            },
         )
+
+    def _contract_and_limits(
+        self, session: Session, task: TaskRow
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Resolve the ACTIVE contract's permission ceiling and resource limits."""
+        contract = session.scalars(
+            select(ContractRow)
+            .where(
+                ContractRow.task_id == task.task_id,
+                ContractRow.contract_version == task.contract_version,
+            )
+            .order_by(ContractRow.contract_version.desc())
+        ).first()
+        ceiling: dict[str, Any] = {}
+        resource_limits: dict[str, Any] = {}
+        if contract is not None:
+            content = json.loads(contract.content_json)
+            raw_ceiling = content.get("permission_ceiling")
+            if isinstance(raw_ceiling, dict):
+                ceiling = dict(raw_ceiling)
+            elif raw_ceiling is not None:
+                ceiling = {"tools": raw_ceiling}
+            raw_limits = content.get("resource_limits")
+            if isinstance(raw_limits, dict):
+                resource_limits = dict(raw_limits)
+        return ceiling, resource_limits
+
+    def _build_context_manifest(
+        self,
+        session: Session,
+        *,
+        task: TaskRow,
+        run_id: str,
+        manifest_id: str,
+        wu_id: str,
+        plan_spec_version: int,
+        profile_id: str,
+        profile_version: int,
+        workspace_id: str | None,
+        resource_limits: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Immutable initial context authorization for one Run (SPEC §10.2).
+
+        Every entry names a fixed version/hash. The manifest is what the Run is
+        *authorized* to see; what the adapter actually materializes is recorded
+        separately (``materialized_hash`` on appends, and the adapter's own log).
+        """
+        contract = session.scalars(
+            select(ContractRow)
+            .where(
+                ContractRow.task_id == task.task_id,
+                ContractRow.contract_version == task.contract_version,
+            )
+            .order_by(ContractRow.contract_version.desc())
+        ).first()
+        mandatory: list[dict[str, Any]] = []
+        if contract is not None:
+            mandatory.append(
+                {
+                    "kind": "contract",
+                    "ref": f"contract:{task.task_id}:v{contract.contract_version}",
+                    "version": contract.contract_version,
+                    "hash": contract.content_hash,
+                    "required": True,
+                }
+            )
+            for deliverable in _json_list(contract.content_json, "deliverables"):
+                mandatory.append(
+                    {
+                        "kind": "deliverable",
+                        "ref": deliverable.get("deliverable_id"),
+                        "expected_kind": deliverable.get("expected_kind"),
+                        "required": True,
+                    }
+                )
+
+        plan = session.scalars(
+            select(PlanRow)
+            .where(
+                PlanRow.task_id == task.task_id,
+                PlanRow.plan_version == task.plan_version,
+            )
+            .order_by(PlanRow.plan_version.desc())
+        ).first()
+        if plan is not None:
+            mandatory.append(
+                {
+                    "kind": "plan",
+                    "ref": f"plan:{task.task_id}:v{plan.plan_version}",
+                    "version": plan.plan_version,
+                    "hash": plan.content_hash,
+                    "required": True,
+                }
+            )
+
+        # Fixed inputs from upstream work: dependency results the Run may rely on.
+        dependency_refs: list[dict[str, Any]] = []
+        for edge in _json_list(plan.edges_json, None) if plan is not None else []:
+            dep_id = edge.get("from_work_unit_id") or edge.get("from")
+            if dep_id != wu_id:
+                continue
+            upstream = session.scalars(
+                select(WorkUnitExecutionRow).where(
+                    WorkUnitExecutionRow.work_unit_id == edge.get("to_work_unit_id")
+                    or WorkUnitExecutionRow.work_unit_id == edge.get("to")
+                )
+            ).first()
+            if upstream is None or not upstream.selected_result_ref:
+                continue
+            dependency_refs.append(
+                {
+                    "kind": "dependency_result",
+                    "work_unit_id": upstream.work_unit_id,
+                    "ref": upstream.selected_result_ref,
+                    "hash": upstream.verified_artifact_hash,
+                    "required": True,
+                }
+            )
+
+        spec_row = session.scalars(
+            select(WorkUnitSpecRow).where(
+                WorkUnitSpecRow.work_unit_id == wu_id,
+                WorkUnitSpecRow.spec_version == plan_spec_version,
+            )
+        ).first()
+        return {
+            "context_manifest_id": manifest_id,
+            "task_id": task.task_id,
+            "run_id": run_id,
+            "contract_version": task.contract_version,
+            "plan_version": task.plan_version,
+            "assignment_ref": wu_id,
+            "context_policy": "FRESH",
+            "profile_ref": f"{profile_id}@v{profile_version}",
+            "mandatory_refs": mandatory,
+            "optional_refs": [],
+            "excluded_categories": ["other_tasks", "human_session", "credentials"],
+            "dependency_result_refs": dependency_refs,
+            "artifact_refs": [],
+            "project_context_refs": [],
+            "previous_run_ref": None,
+            "context_budget": {
+                "max_materialized_bytes": _int_or(
+                    (resource_limits or {}).get("context_max_materialized_bytes"),
+                    DEFAULTS.context_max_materialized_bytes,
+                )
+            },
+            "mandatory_bytes": _mandatory_context_bytes(
+                session, mandatory, dependency_refs, self.workspace_root, workspace_id
+            ),
+            "work_unit_objective": spec_row.objective if spec_row else None,
+            "workspace_id": workspace_id,
+        }
+
+    def _context_append(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Append a dynamic input to a Run's context (SPEC §10.3).
+
+        Append-only: the initial manifest never changes. Each append records why the new
+        input was admitted, what it is, and (when the bytes exist here) a materialized
+        hash, so the read path can be audited later.
+        """
+        run = session.get(AgentRunRow, payload["run_id"])
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        self._assert_run_write_binding(session, auth, run, payload)
+        task = self._get_task(session, run.task_id)
+        if TaskState(task.state) in {
+            TaskState.CANCELLING,
+            TaskState.ABORTED,
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+        }:
+            raise PreconditionError(
+                f"task state {task.state} does not allow context appends", code="task_frozen"
+            )
+
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise PreconditionError("reason required", code="context_reason_required")
+        ref = str(payload.get("authorized_ref") or payload.get("ref") or "").strip()
+        if not ref:
+            raise PreconditionError("authorized_ref required", code="context_ref_required")
+
+        version = payload.get("version")
+        content_hash_value = payload.get("content_hash")
+        materialized = payload.get("materialized_hash")
+        size_bytes: int | None = None
+
+        run_input = session.get(RunInputRow, run.run_id)
+        # A workspace-relative ref must resolve inside this Run's own workspace; the
+        # bytes are hashed here so the append cannot claim content it did not read.
+        if run_input is not None and _looks_like_relative_path(ref):
+            try:
+                host_path = self._resolve_workspace_relative(run_input.workspace_id or "", ref)
+            except (PreconditionError, NotFoundError) as exc:
+                raise PreconditionError(
+                    f"context ref refused: {exc}", code="context_ref_refused"
+                ) from exc
+            content = host_path.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            if content_hash_value is not None and str(content_hash_value) != digest:
+                raise ConflictError(
+                    "context ref hash mismatch", code="context_hash_mismatch"
+                )
+            content_hash_value = digest
+            materialized = materialized or digest
+            size_bytes = len(content)
+
+        def _next_seq() -> int:
+            current = session.scalar(
+                select(func.max(ContextAppendRow.sequence_no)).where(
+                    ContextAppendRow.task_id == task.task_id,
+                    ContextAppendRow.run_id == run.run_id,
+                )
+            )
+            return int(current or 0) + 1
+
+        append_id = new_id("ctxapp")
+        session.add(
+            ContextAppendRow(
+                append_id=append_id,
+                task_id=task.task_id,
+                run_id=run.run_id,
+                sequence_no=_next_seq(),
+                reason=reason,
+                authorized_ref=ref,
+                version=str(version) if version is not None else None,
+                content_hash=str(content_hash_value) if content_hash_value else None,
+                grant_ref=str(payload.get("grant_ref") or "") or None,
+                materialized_hash=str(materialized) if materialized else None,
+                created_at=self.clock.now(),
+            )
+        )
+        self._append_event(
+            session,
+            task.task_id,
+            "context.appended",
+            auth_actor=auth.actor_id,
+            payload={
+                "run_id": run.run_id,
+                "reason": reason,
+                "authorized_ref": ref,
+                "amount": size_bytes,
+            },
+        )
+        return CommandResult.success(
+            {
+                "append_id": append_id,
+                "run_id": run.run_id,
+                "reason": reason,
+                "authorized_ref": ref,
+                "materialized_hash": materialized,
+                "size": size_bytes,
+            }
+        )
+
+    def get_run_context(self, auth: AuthContext, run_id: str) -> dict[str, Any]:
+        """The manifest plus every admitted append — readable only by the Run itself."""
+
+        def _read(session: Session) -> dict[str, Any]:
+            run = session.get(AgentRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run not found", code="run_not_found")
+            self._assert_run_write_binding(
+                session, auth, run, {"run_id": run_id}, require_fencing=False
+            )
+            manifest = session.scalars(
+                select(ContextManifestRow).where(ContextManifestRow.run_id == run_id)
+            ).first()
+            appends = session.scalars(
+                select(ContextAppendRow)
+                .where(ContextAppendRow.run_id == run_id)
+                .order_by(ContextAppendRow.sequence_no)
+            ).all()
+            return {
+                "run_id": run_id,
+                "manifest_id": manifest.context_manifest_id if manifest else None,
+                "manifest_hash": manifest.manifest_hash if manifest else None,
+                "manifest": json.loads(manifest.content_json) if manifest else None,
+                "appends": [
+                    {
+                        "sequence_no": a.sequence_no,
+                        "reason": a.reason,
+                        "authorized_ref": a.authorized_ref,
+                        "version": a.version,
+                        "content_hash": a.content_hash,
+                        "materialized_hash": a.materialized_hash,
+                    }
+                    for a in appends
+                ],
+            }
+
+        return self.executor.run(_read)
 
     def _assert_run_write_binding(
         self,

@@ -26,6 +26,7 @@ class SystemDefaults:
     scheduler_scan_seconds: int = 1
     decision_ttl_hours: int = 24
     side_effect_approval_ttl_minutes: int = 15
+    context_max_materialized_bytes: int = 262144
     message_page_size: int = 50
     message_page_max: int = 200
 

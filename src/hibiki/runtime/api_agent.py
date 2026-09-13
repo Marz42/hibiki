@@ -27,6 +27,7 @@ import shlex
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from hibiki.domain.enums import ActorType
@@ -344,7 +345,7 @@ class ApiAgentAdapter(AgentAdapter):
         spec: dict[str, Any],
         run_input: dict[str, Any],
     ) -> tuple[str | None, str | None]:
-        messages = self._build_messages(spec, run_input)
+        messages = self._build_messages(spec, run_input, auth, record.run_id)
         granted = list(spec.get("granted_tools") or run_input.get("granted_tools") or [])
         tools = _tool_schemas(granted)
         turn_budget = max(1, min(self.max_turns, int(spec.get("max_turns") or self.max_turns)))
@@ -668,7 +669,11 @@ class ApiAgentAdapter(AgentAdapter):
         )
 
     def _build_messages(
-        self, spec: dict[str, Any], run_input: dict[str, Any]
+        self,
+        spec: dict[str, Any],
+        run_input: dict[str, Any],
+        auth: Any = None,
+        run_id: str = "",
     ) -> list[ChatMessage]:
         lines = [f"Task: {spec.get('task_id')}"]
         objective = spec.get("objective") or ""
@@ -682,7 +687,9 @@ class ApiAgentAdapter(AgentAdapter):
         criteria = list(spec.get("acceptance_criteria") or [])
         if criteria:
             lines.append("Acceptance criteria: " + json.dumps(criteria, default=str))
-        appends = _context_append_texts(spec, run_input)
+        appends = _context_append_texts(
+            self._core, auth, str(spec.get("run_id") or ""), run_input.get("workspace_path")
+        )
         if appends:
             lines.append("Appended context:\n" + "\n".join(appends))
         granted = list(spec.get("granted_tools") or run_input.get("granted_tools") or [])
@@ -823,28 +830,47 @@ def _sandbox_command(parameters: dict[str, Any]) -> dict[str, Any]:
     return command_spec
 
 
-def _context_append_texts(spec: dict[str, Any], run_input: dict[str, Any]) -> list[str]:
-    """Best-effort extraction of appended context text for the prompt.
+def _context_append_texts(
+    core: Any, auth: Any, run_id: str, workspace_path: str | None
+) -> list[str]:
+    """Read the Run's admitted context so the worker prompt matches the audit record.
 
-    Task G owns ContextAppend materialization; until it lands, appended context is
-    only exposed through the run input / spec metadata, so this reads whichever of
-    those carries text and ignores reference-only entries.
+    The initial manifest is summarized by hash; every ``ContextAppend`` is read from
+    the source the Core authorized (workspace-relative file or the immutable artifact
+    store) and labeled with the reason and provenance that were recorded.
     """
-    candidates: list[Any] = []
-    direct = run_input.get("context_appends")
-    if isinstance(direct, list):
-        candidates.extend(direct)
-    metadata = spec.get("metadata")
-    if isinstance(metadata, dict) and isinstance(metadata.get("context_appends"), list):
-        candidates.extend(metadata["context_appends"])
+    try:
+        ctx = core.get_run_context(auth, run_id)
+    except Exception:  # noqa: BLE001 — context is best effort, never fatal
+        return []
     texts: list[str] = []
-    for item in candidates:
-        if isinstance(item, str) and item.strip():
-            texts.append(item)
-        elif isinstance(item, dict):
-            text = item.get("text") or item.get("content") or item.get("materialized_text")
-            if isinstance(text, str) and text.strip():
-                texts.append(text)
+    if ctx.get("manifest_hash"):
+        texts.append(f"[manifest {ctx.get('manifest_id')} sha256={ctx['manifest_hash']}]")
+    workspace_root = Path(workspace_path) if workspace_path else None
+    for append in ctx.get("appends") or []:
+        ref = str(append.get("authorized_ref") or "")
+        reason = append.get("reason") or "append"
+        body: str | None = None
+        if ref.startswith("artifact://"):
+            try:
+                body = core._artifact_store().get(ref).decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                body = None
+        elif workspace_root is not None and ref and not ref.startswith(
+            ("task:", "contract:", "plan:", "run:", "msg:")
+        ):
+            try:
+                from hibiki.tools.paths import WorkspacePaths
+
+                with WorkspacePaths(workspace_root) as paths:
+                    body = paths.open_for_read(ref).read().decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                body = None
+        if body is None:
+            texts.append(f"[{reason}] {ref} (unavailable)")
+            continue
+        digest = append.get("materialized_hash") or ""
+        texts.append(f"[{reason}] {ref} sha256={digest}\n{body}")
     return texts
 
 

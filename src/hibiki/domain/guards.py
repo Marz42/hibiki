@@ -25,6 +25,7 @@ INTERNAL_ONLY_OPS = frozenset(
         "set_writer_alive",
         "heartbeat",
         "publish_artifact",
+        "context_append",
     }
 )
 
