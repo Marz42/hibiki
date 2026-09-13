@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 
-from hibiki.application.bootstrap import bootstrap_core, run_migrations
+from hibiki.application.bootstrap import SCHEMA_VERSION, bootstrap_core, run_migrations
 from hibiki.domain.errors import SchemaStartupError
 from hibiki.persistence.models import ensure_schema_version
 
@@ -18,10 +18,10 @@ def test_migrate_from_empty_dir(tmp_path: Path):
     url = f"sqlite:///{db.as_posix()}"
     run_migrations(url)
     engine = create_engine(url)
-    ensure_schema_version(engine, "m0")
+    ensure_schema_version(engine, SCHEMA_VERSION)
     with engine.connect() as conn:
         row = conn.execute(text("SELECT value FROM schema_meta WHERE key='schema_version'")).one()
-        assert row[0] == "m0"
+        assert row[0] == SCHEMA_VERSION
 
 
 def test_refuse_start_without_schema(tmp_path: Path):
@@ -32,7 +32,7 @@ def test_refuse_start_without_schema(tmp_path: Path):
         conn.execute(text("CREATE TABLE dummy (id INTEGER)"))
         conn.commit()
     with pytest.raises(RuntimeError, match="schema version"):
-        ensure_schema_version(engine, "m0")
+        ensure_schema_version(engine, SCHEMA_VERSION)
 
 
 def test_startup_refuses_unknown_schema_on_existing_db(tmp_path: Path):
@@ -90,7 +90,35 @@ def test_startup_upgrades_known_older_revision(tmp_path: Path):
 
     run_migrations(url)
     engine = create_engine(url)
-    ensure_schema_version(engine, "m0")
+    ensure_schema_version(engine, SCHEMA_VERSION)
+
+
+def test_startup_upgrades_m0_generation_to_m1(tmp_path: Path):
+    """A database left at the frozen M0 generation is migrated, not refused."""
+    from alembic.config import Config
+
+    from alembic import command
+    from hibiki.application.bootstrap import project_root
+
+    db = tmp_path / "hibiki.db"
+    url = f"sqlite:///{db.as_posix()}"
+    cfg = Config(str(project_root() / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "0004_evidence_sequence")
+    con = sqlite3.connect(db)
+    assert con.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()[0] == "m0"
+    con.close()
+
+    run_migrations(url)
+    engine = create_engine(url)
+    ensure_schema_version(engine, SCHEMA_VERSION)
+    con = sqlite3.connect(db)
+    assert con.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()[0] == "m1"
+    con.close()
 
 
 def test_reconcile_after_restart(tmp_path: Path):

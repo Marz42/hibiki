@@ -476,6 +476,68 @@ class AgentProfileRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class RunInputRow(Base):
+    __tablename__ = "run_inputs"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.run_id"), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    workspace_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    granted_tools_json: Mapped[str] = mapped_column(Text, nullable=False)
+    permission_ceiling_json: Mapped[str] = mapped_column(Text, nullable=False)
+    context_manifest_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    spec_json: Mapped[str] = mapped_column(Text, nullable=False)
+    spec_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ToolInvocationRow(Base):
+    __tablename__ = "tool_invocations"
+
+    invocation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.run_id"), nullable=False, index=True)
+    work_unit_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    parameters_json: Mapped[str] = mapped_column(Text, nullable=False)
+    parameters_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)  # ALLOW | DENY
+    deny_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    grant_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    fencing_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)  # ok | error | timeout | denied
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "run_id", "sequence_no", name="uq_tool_invocation_seq"),
+    )
+
+
+class ContextAppendRow(Base):
+    __tablename__ = "context_appends"
+
+    append_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.run_id"), nullable=False, index=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(256), nullable=False)
+    authorized_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    grant_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    materialized_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "run_id", "sequence_no", name="uq_context_append_seq"),
+    )
+
+
 def create_sqlite_engine(url: str = "sqlite:///hibiki.db") -> Engine:
     engine = create_engine(url, connect_args={"check_same_thread": False}, future=True)
 
@@ -495,7 +557,7 @@ def make_session_factory(engine: Engine) -> sessionmaker:
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
-def ensure_schema_version(engine: Engine, expected: str = "m0") -> None:
+def ensure_schema_version(engine: Engine, expected: str = "m1") -> None:
     with engine.connect() as conn:
         try:
             row = conn.execute(

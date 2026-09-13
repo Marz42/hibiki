@@ -27,6 +27,15 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+#: Schema generation this code writes and requires. M1 adds execution-boundary tables
+#: (run_inputs / tool_invocations / context_appends) on top of the frozen M0 schema.
+SCHEMA_VERSION = "m1"
+
+#: Schema generations this code can migrate from. A database recording one of these is
+#: upgraded; anything else is an unknown schema and startup is refused.
+KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"m0", SCHEMA_VERSION})
+
+
 def _alembic_revision(engine: Engine) -> str | None:
     """Current Alembic revision stored in the database, if any."""
     if "alembic_version" not in inspect(engine).get_table_names():
@@ -35,12 +44,14 @@ def _alembic_revision(engine: Engine) -> str | None:
         return conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
 
 
-def inspect_existing_schema(engine: Engine, expected: str = "m0") -> None:
-    """Refuse to start on a database whose schema state is not the expected one.
+def inspect_existing_schema(engine: Engine, expected: str = SCHEMA_VERSION) -> None:
+    """Refuse to start on a database whose schema state this code cannot migrate.
 
     Runs *before* migrations so an unknown or newer schema produces a diagnosable
-    refusal instead of a raw DDL error. A fresh database (or one with unrelated
-    application tables) has no recorded schema state and is migrated normally.
+    refusal instead of a raw DDL error. A fresh database, a database with unrelated
+    application tables, or a database at a *known older* generation has a recognizable
+    state and is migrated normally; an unrecognised ``schema_version`` or an Alembic
+    revision this code does not know is refused.
     """
     tables = set(inspect(engine).get_table_names())
     if "schema_meta" in tables:
@@ -48,11 +59,12 @@ def inspect_existing_schema(engine: Engine, expected: str = "m0") -> None:
             row = conn.execute(
                 text("SELECT value FROM schema_meta WHERE key='schema_version'")
             ).fetchone()
-        if row is None or row[0] != expected:
+        recorded = None if row is None else row[0]
+        if recorded not in KNOWN_SCHEMA_VERSIONS:
             raise SchemaStartupError(
                 "schema version unknown; refuse to start: "
-                f"schema_meta.schema_version={None if row is None else row[0]!r}, "
-                f"expected {expected!r}. Restore a backup or run "
+                f"schema_meta.schema_version={recorded!r}, expected one of "
+                f"{sorted(KNOWN_SCHEMA_VERSIONS)}. Restore a backup or run "
                 "'alembic upgrade head' against the expected schema."
             )
 
@@ -101,7 +113,7 @@ def bootstrap_core(
     if run_migrate:
         run_migrations(db_url)
     engine = create_sqlite_engine(db_url)
-    ensure_schema_version(engine, "m0")
+    ensure_schema_version(engine, SCHEMA_VERSION)
     lock = InstanceLock(data_dir)
     if acquire_lock:
         lock.acquire()
@@ -110,6 +122,8 @@ def bootstrap_core(
     clk: Clock = clock or (FakeClock() if fake_time else SystemClock())
     agent_adapter = agent or FakeAgentAdapter()
     external_adapter = external or FakeExternalAdapter()
+    workspace_root = data_dir / "workspaces"
+    workspace_root.mkdir(parents=True, exist_ok=True)
     artifacts = LocalArtifactStore(data_dir / "artifacts")
     svc = ApplicationService(
         executor,
@@ -117,6 +131,7 @@ def bootstrap_core(
         agent_adapter,
         external_adapter,
         dispatch_enabled=dispatch_enabled,
+        workspace_root=str(workspace_root),
     )
     ctx = {
         "engine": engine,

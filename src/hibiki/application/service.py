@@ -33,6 +33,7 @@ from hibiki.domain.errors import (
     NotFoundError,
     PreconditionError,
 )
+from hibiki.domain.execution import RunExecutionSpec, normalize_ceiling_tools
 from hibiki.domain.guards import (
     guard_dispatch,
     guard_human_decision,
@@ -72,6 +73,7 @@ from hibiki.persistence.models import (
     PlannerSessionRow,
     PlanRow,
     ResultSnapshotRow,
+    RunInputRow,
     SideEffectRow,
     TaskRow,
     WorkspaceRow,
@@ -93,12 +95,14 @@ class ApplicationService:
         external_adapter: ExternalAdapter,
         *,
         dispatch_enabled: bool = True,
+        workspace_root: str | None = None,
     ) -> None:
         self.executor = executor
         self.clock = clock
         self.agent_adapter = agent_adapter
         self.external_adapter = external_adapter
         self.dispatch_enabled = dispatch_enabled
+        self.workspace_root = workspace_root
         self._wake_requested = False
 
     # ------------------------------------------------------------------
@@ -1720,7 +1724,7 @@ class ApplicationService:
                 run_id=run_id,
                 task_id=task.task_id,
                 assignment_kind=AssignmentKind.EXECUTE,
-                agent_instance_id=f"fake:{run_id}",
+                agent_instance_id=f"local:{run_id}",
                 work_unit_id=wu_id,
                 work_unit_spec_version=plan_spec_version,
                 attempt_no=attempt,
@@ -1737,6 +1741,42 @@ class ApplicationService:
             )
             session.add(run)
             session.flush()
+
+            # Freeze the worker's execution contract and persist exactly what it is
+            # allowed to see (SPEC §9.2 / §13 / §15). The Outbox payload only carries the
+            # binding + spec hash; the worker reads the spec through its run credential.
+            agent_instance_id = f"local:{run_id}"
+            run.agent_instance_id = agent_instance_id
+            exec_spec = self._build_run_execution_spec(
+                session,
+                run_id=run_id,
+                task=task,
+                wu_id=wu_id,
+                plan_spec_version=plan_spec_version,
+                context_manifest_id=manifest_id,
+                context_manifest_hash=mh,
+                workspace_id=ws.workspace_id if ws else None,
+                fencing=fencing,
+                profile_version=profile_version,
+                agent_instance_id=agent_instance_id,
+            )
+            session.add(
+                RunInputRow(
+                    run_id=run_id,
+                    task_id=task.task_id,
+                    workspace_id=ws.workspace_id if ws else None,
+                    workspace_path=exec_spec.workspace_path,
+                    profile_id=exec_spec.profile_id,
+                    profile_version=exec_spec.profile_version,
+                    granted_tools_json=canonical_json(list(exec_spec.granted_tools)),
+                    permission_ceiling_json=canonical_json(exec_spec.permission_ceiling),
+                    context_manifest_id=manifest_id,
+                    spec_json=exec_spec.to_json(),
+                    spec_hash=exec_spec.spec_hash,
+                    created_at=now,
+                )
+            )
+
             session.add(ActiveExecuteRunMarker(work_unit_id=wu_id, run_id=run_id))
             wu.status = transition_work_unit(WorkUnitStatus(wu.status), "run.started")
             wu.active_run_id = run_id
@@ -1764,6 +1804,16 @@ class ApplicationService:
                             "grant_epoch": run.grant_epoch,
                             "fencing_epoch": fencing,
                             "revoke_epoch": task.revoke_epoch,
+                            "work_unit_id": wu_id,
+                            "profile_id": exec_spec.profile_id,
+                            "profile_version": profile_version,
+                            "context_manifest_id": manifest_id,
+                            "context_manifest_hash": mh,
+                            "workspace_id": ws.workspace_id if ws else None,
+                            "workspace_path": exec_spec.workspace_path,
+                            "granted_tools": list(exec_spec.granted_tools),
+                            "spec_ref": f"run_inputs:{run_id}",
+                            "spec_hash": exec_spec.spec_hash,
                         }
                     ),
                     status=OutboxStatus.PENDING,
@@ -1806,6 +1856,86 @@ class ApplicationService:
             else:
                 return False
         return True
+
+    def _build_run_execution_spec(
+        self,
+        session: Session,
+        *,
+        run_id: str,
+        task: TaskRow,
+        wu_id: str,
+        plan_spec_version: int,
+        context_manifest_id: str,
+        context_manifest_hash: str,
+        workspace_id: str | None,
+        fencing: int,
+        profile_version: int,
+        agent_instance_id: str,
+    ) -> RunExecutionSpec:
+        """Freeze everything the worker is allowed to do for this Run (SPEC §9.2)."""
+        contract = session.scalars(
+            select(ContractRow)
+            .where(
+                ContractRow.task_id == task.task_id,
+                ContractRow.contract_version == task.contract_version,
+            )
+            .order_by(ContractRow.contract_version.desc())
+        ).first()
+        ceiling: dict[str, Any] = {}
+        if contract is not None:
+            content = json.loads(contract.content_json)
+            raw_ceiling = content.get("permission_ceiling")
+            if isinstance(raw_ceiling, dict):
+                ceiling = dict(raw_ceiling)
+            elif raw_ceiling is not None:
+                ceiling = {"tools": raw_ceiling}
+
+        granted_tools, unknown_tools = normalize_ceiling_tools(ceiling)
+
+        spec_row = session.scalars(
+            select(WorkUnitSpecRow).where(
+                WorkUnitSpecRow.work_unit_id == wu_id,
+                WorkUnitSpecRow.spec_version == plan_spec_version,
+            )
+        ).first()
+        wu_content: dict[str, Any] = json.loads(spec_row.content_json) if spec_row else {}
+        wu_objective = spec_row.objective if spec_row else task.title
+        ws_path = (
+            f"{self.workspace_root.rstrip('/')}/{workspace_id}"
+            if self.workspace_root and workspace_id
+            else None
+        )
+        return RunExecutionSpec(
+            run_id=run_id,
+            task_id=task.task_id,
+            work_unit_id=wu_id,
+            assignment_kind=str(AssignmentKind.EXECUTE),
+            profile_id="local",
+            profile_version=profile_version,
+            contract_version=int(task.contract_version or 0),
+            plan_version=task.plan_version,
+            context_manifest_id=context_manifest_id,
+            context_manifest_hash=context_manifest_hash,
+            workspace_id=workspace_id,
+            workspace_path=ws_path,
+            workspace_isolation="workspace-only",
+            granted_tools=granted_tools,
+            permission_ceiling=ceiling,
+            granted_permissions={"network": False, "host_paths": False, "credentials": False},
+            principal_id=task.principal_id,
+            agent_instance_id=agent_instance_id,
+            grant_epoch=int(task.revoke_epoch),
+            fencing_epoch=int(fencing),
+            revoke_epoch=int(task.revoke_epoch),
+            model_call_limit=int(task.model_call_limit),
+            max_turns=int(DEFAULTS.max_run_model_turns),
+            wall_timeout_seconds=int(DEFAULTS.run_wall_timeout_seconds),
+            objective=wu_objective,
+            work_type=str(wu_content.get("work_type") or ""),
+            goal_label=str(wu_content.get("work_type") or wu_objective),
+            context_policy=str(wu_content.get("context_policy") or "FRESH"),
+            metadata={"unknown_ceiling_tools": unknown_tools},
+        )
 
     def _assert_run_write_binding(
         self,
@@ -3776,7 +3906,8 @@ class ApplicationService:
         if run and run.status == AgentRunStatus.CREATED:
             run.status = AgentRunStatus.RUNNING
             run.started_at = self.clock.now()
-            run.agent_instance_id = f"fake:{run.run_id}"
+            # agent_instance_id is stable from creation (SPEC §9.2 identity); the
+            # adapter echoes the one it was started with, so never rewrite it here.
 
     def _ack_stop(
         self,
@@ -4059,5 +4190,39 @@ class ApplicationService:
     def count_inbox(self) -> int:
         def _read(session: Session) -> int:
             return int(session.scalar(select(func.count()).select_from(InboxRow)) or 0)
+
+        return self.executor.run(_read)
+
+    def get_run_input(self, auth: AuthContext, run_id: str) -> dict[str, Any]:
+        """Return the frozen execution contract for a Run (SPEC §9.2).
+
+        Readable only by the runtime bound to that Run: the credential must be Internal
+        and carry the matching task/run/fencing/grant binding, which is the same rule the
+        Core applies to worker writes. Other runs and other actors are refused.
+        """
+
+        def _read(session: Session) -> dict[str, Any]:
+            run = session.get(AgentRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run not found", code="run_not_found")
+            self._assert_run_write_binding(
+                session, auth, run, {"run_id": run_id}, require_fencing=False
+            )
+            row = session.get(RunInputRow, run_id)
+            if row is None:
+                raise NotFoundError("run input not found", code="run_input_not_found")
+            return {
+                "run_id": row.run_id,
+                "task_id": row.task_id,
+                "workspace_id": row.workspace_id,
+                "workspace_path": row.workspace_path,
+                "profile_id": row.profile_id,
+                "profile_version": row.profile_version,
+                "context_manifest_id": row.context_manifest_id,
+                "granted_tools": json.loads(row.granted_tools_json),
+                "permission_ceiling": json.loads(row.permission_ceiling_json),
+                "spec_hash": row.spec_hash,
+                "spec": json.loads(row.spec_json),
+            }
 
         return self.executor.run(_read)
