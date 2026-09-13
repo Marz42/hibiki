@@ -550,6 +550,9 @@ class ApiAgentAdapter(AgentAdapter):
             return {"status": "error", "error": "sandbox_unavailable"}
         try:
             command = _sandbox_command(parameters)
+            # Hand the run's stop event to the sandbox so a Pause/Cancel kills the
+            # container immediately instead of waiting for the command's wall clock.
+            command["cancel_event"] = record.stop_event
             result = dict(self._sandbox.execute(command) or {})
         except Exception as exc:  # noqa: BLE001
             detail = f"{type(exc).__name__}: {exc}"

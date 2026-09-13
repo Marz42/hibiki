@@ -196,6 +196,9 @@ class DockerSandboxAdapter(SandboxAdapter):
     def execute(self, command: dict[str, Any]) -> dict[str, Any]:
         spec = self._require_spec()
         cmd = self._validate_command(command)
+        cancel_event = command.get("cancel_event")
+        if cancel_event is not None and not hasattr(cancel_event, "is_set"):
+            raise ValueError("command['cancel_event'] must be an event-like object")
         timeout_s = self._effective_timeout(cmd, spec)
         started = time.monotonic()
         stdin = cmd.stdin.encode("utf-8") if cmd.stdin is not None else None
@@ -218,20 +221,58 @@ class DockerSandboxAdapter(SandboxAdapter):
                 )
             container_id: str | None = None
             timed_out = False
-            try:
-                raw_out, raw_err = proc.communicate(input=stdin, timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                # Docker has no wall-clock flag: kill the container by cid, then
-                # reap the client so no `docker run` process is left behind.
-                timed_out = True
-                container_id = _wait_for_container_id(cidfile)
-                self._kill_container(container_id)
-                raw_out, raw_err = self._reap(proc, spec.limits.stop_grace_s)
+            cancelled = False
+            deadline = started + timeout_s
+            # Non-blocking read loop so a stop request can interrupt a long command
+            # immediately instead of waiting for the wall clock (SPEC §18).
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    os.set_blocking(stream.fileno(), False)
+            if proc.stdin is not None and stdin is not None:
+                try:
+                    proc.stdin.write(stdin)
+                    proc.stdin.flush()
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            while True:
+                for stream in (proc.stdout, proc.stderr):
+                    chunk = stream.read() if stream is not None else None
+                    if chunk:
+                        if stream is proc.stdout:
+                            raw_out += chunk
+                        else:
+                            raw_err += chunk
+                if proc.poll() is not None:
+                    break
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    container_id = _wait_for_container_id(cidfile)
+                    self._kill_container(container_id)
+                    raw_out += proc.stdout.read() or b""
+                    raw_err += proc.stderr.read() or b""
+                    proc.wait(timeout=spec.limits.stop_grace_s)
+                    break
+                if time.monotonic() >= deadline:
+                    # Docker has no wall-clock flag: kill the container by cid, then
+                    # reap the client so no `docker run` process is left behind.
+                    timed_out = True
+                    container_id = _wait_for_container_id(cidfile)
+                    self._kill_container(container_id)
+                    raw_out += proc.stdout.read() or b""
+                    raw_err += proc.stderr.read() or b""
+                    proc.wait(timeout=spec.limits.stop_grace_s)
+                    break
+                time.sleep(0.05)
+            raw_out += proc.stdout.read() or b""
+            raw_err += proc.stderr.read() or b""
             container_id = container_id or _read_cidfile(cidfile)
         stdout = raw_out.decode("utf-8", errors="replace")
         stderr = raw_err.decode("utf-8", errors="replace")
         exit_code = proc.returncode
-        if timed_out:
+        if cancelled:
+            status = "cancelled"
+        elif timed_out:
             status = "timeout"
         elif exit_code == 0:
             status = "ok"

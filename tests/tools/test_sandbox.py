@@ -312,3 +312,40 @@ def test_malformed_command_and_spec_raise_value_error(tmp_path: Path) -> None:
         )
     with pytest.raises(ValueError):
         DockerSandboxAdapter().execute({"argv": ["echo"]})
+
+
+@docker_required
+def test_stop_event_interrupts_a_long_command_well_inside_15s(workspace: Path) -> None:
+    """SPEC §18/§24.4: a killable command must stop from request to exit in ≤15 s.
+
+    The 30 s sleep would otherwise run to its wall clock; the cancel event must kill
+    the container immediately and leave nothing behind.
+    """
+    import threading
+
+    spec = _spec(workspace, limits=SandboxLimits(wall_timeout_s=120))
+    adapter = DockerSandboxAdapter(spec)
+    baseline = _running_containers()
+    cancel = threading.Event()
+
+    def _request_stop() -> None:
+        time.sleep(0.5)
+        cancel.set()
+
+    threading.Thread(target=_request_stop, daemon=True).start()
+    started = time.monotonic()
+    result = adapter.execute({"argv": ["sleep", "30"], "cancel_event": cancel})
+    elapsed = time.monotonic() - started
+
+    assert result["status"] == "cancelled"
+    assert elapsed < 15, f"stop took {elapsed:.1f}s"
+    assert result["container_id"]
+    assert _no_lingering_containers(baseline), "cancelled sandbox was left running"
+
+
+@docker_required
+def test_cancel_event_must_be_event_like(workspace: Path) -> None:
+    spec = _spec(workspace)
+    adapter = DockerSandboxAdapter(spec)
+    with pytest.raises(ValueError):
+        adapter.execute({"argv": ["true"], "cancel_event": "nope"})

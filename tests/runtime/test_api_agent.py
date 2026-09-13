@@ -11,6 +11,8 @@ import json
 import os
 import threading
 
+import pytest
+
 from hibiki.persistence.models import OutboxRow
 from hibiki.runtime.api_agent import ApiAgentAdapter
 from hibiki.runtime.openai_client import ModelClientError, ModelReply
@@ -310,3 +312,214 @@ def test_tool_call_is_dispatched_through_the_broker(tmp_path):
     row = _run_row(svc, task_id, run_id)
     assert json.loads(row["result_json"])["outcome"] == "COMPLETED"
     assert svc.get_task(task_id)["model_calls_used"] == 2
+
+
+class BlockingSandbox:
+    """Sandbox double whose command blocks until the run's stop event is set.
+
+    Mirrors ``DockerSandboxAdapter``: it receives ``cancel_event`` in the command and
+    returns ``status="cancelled"`` instead of running to the wall clock.
+    """
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.cancelled_at: float | None = None
+        self.finished_at: float | None = None
+
+    def execute(self, command: dict) -> dict:
+        import time as _time
+
+        self.started.set()
+        cancel = command.get("cancel_event")
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline:
+            if cancel is not None and cancel.is_set():
+                self.cancelled_at = _time.monotonic()
+                self.finished_at = self.cancelled_at
+                return {"status": "cancelled", "exit_code": 137, "stdout": "", "stderr": ""}
+            _time.sleep(0.02)
+        self.finished_at = _time.monotonic()
+        return {"status": "timeout", "exit_code": None, "stdout": "", "stderr": ""}
+
+
+def test_stop_interrupts_an_in_flight_tool_command(tmp_path):
+    """SPEC §18: stopping a Run must interrupt a long command, not wait it out."""
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    task_id = _task_with_ceiling(svc, auth, ["shell.run"])
+    sandbox = BlockingSandbox()
+    client = ScriptedClient(
+        [
+            ModelReply(
+                content=None,
+                tool_calls=(_tool_call("shell.run", {"argv": ["sleep", "30"]}),),
+                finish_reason="tool_calls",
+                usage={},
+                raw={},
+            ),
+            _final("done"),
+        ]
+    )
+    adapter = _adapter(svc, client, sandbox=sandbox)
+    run_id = _dispatch(svc, adapter, task_id)
+    assert sandbox.started.wait(5.0), "the tool command never started"
+
+    import time as _time
+
+    requested = _time.monotonic()
+    stop = adapter.stop(run_id, "cancel_requested")
+    elapsed = _time.monotonic() - requested
+
+    assert sandbox.cancelled_at is not None, "the sandbox command was not cancelled"
+    assert elapsed < 15, f"stop took {elapsed:.1f}s"
+    # The run was revoked before its result, so no completed result may be submitted.
+    row = _run_row(svc, task_id, run_id)
+    assert row["status"] != "SUCCEEDED" or row["result_json"] is None
+    assert stop["start_revoked"] is True
+    final = adapter.wait_for_exit(run_id, 5.0)
+    assert final["alive"] is False
+
+
+def _docker_available() -> bool:
+    try:
+        from hibiki.tools.sandbox import DockerSandboxAdapter
+
+        return DockerSandboxAdapter().available()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker unavailable")
+def test_real_container_stop_completes_within_15s(tmp_path):
+    """SPEC §24.4 G5: a killable real process stops within 15 s of the command.
+
+    Uses the real hardened Docker sandbox and a real ``sleep 30``; the measurement is
+    from the stop request to confirmed executor exit.
+    """
+    from pathlib import Path
+
+    from hibiki.tools.sandbox import DockerSandboxAdapter, SandboxLimits, SandboxSpec
+
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    task_id = _task_with_ceiling(svc, auth, ["shell.run"])
+    client = ScriptedClient(
+        [
+            ModelReply(
+                content=None,
+                tool_calls=(_tool_call("shell.run", {"argv": ["sleep", "30"]}),),
+                finish_reason="tool_calls",
+                usage={},
+                raw={},
+            ),
+            _final("done"),
+        ]
+    )
+    adapter = _adapter(svc, client)
+    run_id = _dispatch(svc, adapter, task_id)
+
+    # The sandbox spec needs the Run's own workspace, which exists after dispatch.
+    spec = svc.get_run_input(run_auth(svc, run_id), run_id)
+    workspace = Path(spec["workspace_path"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    adapter._sandbox = DockerSandboxAdapter(
+        SandboxSpec(
+            workspace_host_path=str(workspace),
+            limits=SandboxLimits(wall_timeout_s=120, stop_grace_s=5),
+        )
+    )
+
+    import time as _time
+
+    # Wait until the sandbox really has a container running for this Run.
+    deadline = _time.monotonic() + 10
+    while _time.monotonic() < deadline:
+        row = _run_row(svc, task_id, run_id)
+        if row["status"] == "RUNNING" and client.call_count >= 1:
+            break
+        _time.sleep(0.05)
+    _time.sleep(0.5)  # let the handler actually start the container
+
+    requested = _time.monotonic()
+    adapter.stop(run_id, "cancel_requested")
+    final = adapter.wait_for_exit(run_id, 15.0)
+    elapsed = _time.monotonic() - requested
+
+    assert final["alive"] is False, "the executor did not exit"
+    assert elapsed < 15, f"stop took {elapsed:.1f}s"
+    print(f"[M1-G5] stop request -> confirmed executor exit: {elapsed:.2f}s (sleep 30)")
+
+    # Prove the real path ran: the broker must have audited a shell.run for this Run
+    # and its outcome must be the sandbox's cancellation, not a skipped call.
+    from sqlalchemy import select
+
+    from hibiki.persistence.models import ToolInvocationRow
+
+    rows = svc.executor.run(
+        lambda s: [
+            {"tool_name": r.tool_name, "decision": r.decision, "outcome": r.outcome}
+            for r in s.scalars(
+                select(ToolInvocationRow).where(ToolInvocationRow.run_id == run_id)
+            ).all()
+        ]
+    )
+    shell_rows = [r for r in rows if r["tool_name"] == "shell.run"]
+    assert shell_rows, "shell.run never reached the broker"
+    assert shell_rows[-1]["decision"] == "ALLOW"
+    assert shell_rows[-1]["outcome"] == "cancelled", shell_rows[-1]["outcome"]
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker unavailable")
+def test_pause_command_stops_the_real_container_within_15s(tmp_path):
+    """SPEC §24.4 G5 through the Core entry point: pause_task -> executor exited."""
+    from pathlib import Path
+
+    from hibiki.tools.sandbox import DockerSandboxAdapter, SandboxLimits, SandboxSpec
+
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    task_id = _task_with_ceiling(svc, auth, ["shell.run"])
+    client = ScriptedClient(
+        [
+            ModelReply(
+                content=None,
+                tool_calls=(_tool_call("shell.run", {"argv": ["sleep", "30"]}),),
+                finish_reason="tool_calls",
+                usage={},
+                raw={},
+            ),
+            _final("done"),
+        ]
+    )
+    adapter = _adapter(svc, client)
+    adapter.stop_wait_s = 1.0
+    run_id = _dispatch(svc, adapter, task_id)
+
+    spec = svc.get_run_input(run_auth(svc, run_id), run_id)
+    workspace = Path(spec["workspace_path"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    adapter._sandbox = DockerSandboxAdapter(
+        SandboxSpec(
+            workspace_host_path=str(workspace),
+            limits=SandboxLimits(wall_timeout_s=120, stop_grace_s=5),
+        )
+    )
+
+    import time as _time
+
+    deadline = _time.monotonic() + 10
+    while _time.monotonic() < deadline:
+        if _run_row(svc, task_id, run_id)["status"] == "RUNNING" and client.call_count >= 1:
+            break
+        _time.sleep(0.05)
+    _time.sleep(0.5)
+
+    requested = _time.monotonic()
+    r = svc.execute("pause_task", auth, {"task_id": task_id})
+    assert r.ok, r
+    final = adapter.wait_for_exit(run_id, 15.0)
+    elapsed = _time.monotonic() - requested
+
+    assert final["alive"] is False, "pause did not stop the executor"
+    assert elapsed < 15, f"pause took {elapsed:.1f}s"
+    print(f"[M1-G5] pause_task -> executor exit: {elapsed:.2f}s (sleep 30)")
