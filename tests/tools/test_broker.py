@@ -411,7 +411,10 @@ def test_path_escape_is_refused_and_recorded_as_denied_outcome(tmp_path: Path) -
     assert dir_symlink == {"status": "denied", "reason": "path_escape"}
 
     rows = _rows(harness["svc"], harness["run_id"])
-    assert [row["decision"] for row in rows] == ["ALLOW"] * 4
+    # Every probe is refused and audited as a DENY with a reason.
+    assert [row["outcome"] for row in rows] == ["denied"] * 4
+    assert [row["decision"] for row in rows] == ["DENY"] * 4
+    assert {row["deny_reason"] for row in rows} == {"path_escape"}
     assert [row["outcome"] for row in rows] == ["denied"] * 4
     assert all(json.loads(row["result_json"])["reason"] == "path_escape" for row in rows)
 

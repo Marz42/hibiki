@@ -48,6 +48,10 @@ _BLOCKING_GATE_LIFECYCLES = ("OPEN", "APPROVED_PENDING_APPLY")
 DEFAULT_MAX_READ_BYTES = 256 * 1024
 
 
+class WorkspaceMissingError(RuntimeError):
+    """The Run has no usable workspace on disk; the tool call is refused."""
+
+
 @dataclass(frozen=True)
 class ToolRequest:
     run_id: str
@@ -223,6 +227,8 @@ class ToolBroker:
             }
         except PathSafetyError as exc:
             return self._refuse(auth, invocation_id, "path_escape", str(exc))
+        except WorkspaceMissingError as exc:
+            return self._refuse(auth, invocation_id, "workspace_missing", str(exc))
         except Exception as exc:  # noqa: BLE001 - any I/O failure is a recorded error
             return self._fail(auth, invocation_id, exc)
         self.record_outcome(auth, invocation_id, outcome="ok", result=result)
@@ -242,6 +248,8 @@ class ToolBroker:
             result = {"status": "ok", "path": relative, "entries": entries}
         except PathSafetyError as exc:
             return self._refuse(auth, invocation_id, "path_escape", str(exc))
+        except WorkspaceMissingError as exc:
+            return self._refuse(auth, invocation_id, "workspace_missing", str(exc))
         except Exception as exc:  # noqa: BLE001
             return self._fail(auth, invocation_id, exc)
         self.record_outcome(auth, invocation_id, outcome="ok", result=result)
@@ -265,6 +273,8 @@ class ToolBroker:
             result = {"status": "ok", "path": relative, "sha256": digest, "bytes": len(data)}
         except PathSafetyError as exc:
             return self._refuse(auth, invocation_id, "path_escape", str(exc))
+        except WorkspaceMissingError as exc:
+            return self._refuse(auth, invocation_id, "workspace_missing", str(exc))
         except Exception as exc:  # noqa: BLE001
             return self._fail(auth, invocation_id, exc)
         self.record_outcome(auth, invocation_id, outcome="ok", result=result)
@@ -305,14 +315,39 @@ class ToolBroker:
     def _refuse(
         self, auth: AuthContext, invocation_id: str | None, reason: str, detail: str
     ) -> dict:
+        """Record a refusal as a DENY decision, not merely a failed execution.
+
+        A path that escapes the workspace was never authorized, so the audit row must
+        say DENY with the reason rather than ALLOW with a failed outcome.
+        """
         if invocation_id is not None:
-            self.record_outcome(
-                auth,
-                invocation_id,
-                outcome="denied",
-                result={"reason": reason, "error": detail},
-            )
+            self._record_refusal(auth, invocation_id, reason, detail)
         return {"status": "denied", "reason": reason}
+
+    def _record_refusal(
+        self, auth: AuthContext, invocation_id: str, reason: str, detail: str
+    ) -> None:
+        def _tx(session: Session) -> None:
+            row = session.get(ToolInvocationRow, invocation_id)
+            if row is None:
+                raise NotFoundError("tool invocation not found", code="invocation_not_found")
+            run = session.get(AgentRunRow, row.run_id)
+            task = session.get(TaskRow, run.task_id) if run else None
+            if run is None or task is None:
+                raise NotFoundError("run not found", code="run_not_found")
+            if self._binding_error(auth, run, task, None) is not None:
+                raise AuthorizationError(
+                    "authenticated runtime is not bound to this invocation's run",
+                    code="authorization_denied",
+                )
+            row.decision = "DENY"
+            row.deny_reason = reason
+            row.outcome = "denied"
+            row.result_json = canonical_json({"reason": reason, "error": detail})
+            if row.finished_at is None:
+                row.finished_at = self.clock.now()
+
+        self.executor.run(_tx)
 
     def _fail(self, auth: AuthContext, invocation_id: str | None, exc: Exception) -> dict:
         if invocation_id is not None:
@@ -406,7 +441,9 @@ class ToolBroker:
 
         recorded = self.executor.run(_read)
         if not recorded:
-            raise FileNotFoundError(f"run {run_id} has no recorded workspace path")
+            raise WorkspaceMissingError(f"run {run_id} has no recorded workspace path")
+        if not os.path.isdir(recorded):
+            raise WorkspaceMissingError(f"workspace {recorded!r} is not materialized")
         resolved = os.path.realpath(recorded)
         if self.workspace_root is not None:
             root = os.path.realpath(self.workspace_root)
