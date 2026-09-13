@@ -21,11 +21,11 @@ See `HIBIKI_MVP_SPEC_v0.2.1.md` and `docs/adr/`.
   result; an unknown schema version refuses startup with a diagnostic). Evidence under
   `docs/acceptance/evidence/m0-2026-09-13/`.
 - **M1 §24.4**: [`docs/acceptance/M1-2026-09-13.md`](docs/acceptance/M1-2026-09-13.md) —
-  **PENDING**: H-022–H-032 pass, the hardened per-Run Docker sandbox and the ≤15 s stop budget are
-  measured, and the three fixed tasks run 6/6 against a local provider double. The live-model gate
-  (six runs with operator credentials) is the only open item. Evidence under
-  `docs/acceptance/evidence/m1-2026-09-13/`; the executable plan is
-  [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
+  **PASS**: H-022–H-032 pass, the hardened per-Run Docker sandbox and the ≤15 s stop budget are
+  measured, the three fixed tasks pass against a provider double and in the chaos rehearsal, and
+  the live gate ran **6/6** (three fixed tasks × 2 runs, zero authorization violations, every
+  artifact verified). Evidence under `docs/acceptance/evidence/m1-2026-09-13/`; the executable
+  plan is [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
 
 ### Running the M1 live-model gate
 

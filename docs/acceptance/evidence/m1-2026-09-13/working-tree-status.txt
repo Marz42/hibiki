@@ -1,3 +1,5 @@
-?? docs/acceptance/evidence/m1-2026-09-13/
+ M docs/acceptance/evidence/m1-2026-09-13/source-files.sha256
+ M docs/acceptance/evidence/m1-2026-09-13/source-tree.sha256
+?? docs/acceptance/evidence/m1-2026-09-13/live-runs/
 
-HEAD=61bdc0d32fa5fbbeecc1600959e10147e60939b1
+HEAD=e61c748763c402ad53363006901ab23e81de1684

@@ -1,0 +1,77 @@
+{
+  "task_id": "k1",
+  "attempt": 2,
+  "ok": true,
+  "workspace": "/tmp/hibiki-m1/k1/run2/workspaces/ws_k1_wu1",
+  "seed_files": [
+    "input.txt"
+  ],
+  "run_id": "run_c7a9432f2e2a47de",
+  "elapsed_s": 5.6,
+  "run_status": "SUCCEEDED",
+  "terminal_reason": null,
+  "spec_hash": "0c92d496b7c9308484415bd7a6ee8d00ccce984d9e93e9b903f90c0bdbe9f5c9",
+  "context_manifest_id": "ctx_3107d2c9e0054567",
+  "granted_tools": [
+    "fs.read",
+    "fs.list",
+    "fs.write",
+    "artifact.publish"
+  ],
+  "result": {
+    "acceptance_evidence": [],
+    "artifact_refs": [
+      "4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b"
+    ],
+    "outcome": "COMPLETED",
+    "summary": "Done. `summary.txt` was written with a faithful 3-bullet summary of `input.txt` and published as an artifact.\n\n- File: `summary.txt` (233 bytes)\n- SHA-256: `4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b`\n- Artifact URI: `artifact://4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b`\n\nSummary contents:\n- HIBIKI is a task-centered agent execution system.\n- It freezes authorization in an immutable contract before any worker runs.\n- Every external action is authorized and deduplicated, and unknown outcomes are never blindly replayed.",
+    "verdict": "PASS"
+  },
+  "tool_invocations": [
+    {
+      "sequence_no": 1,
+      "tool_name": "fs.read",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "82f9054a785d7a1a04e1eae2bbbf9dc46f46f76bbc0243ea2350a65795cf40de"
+    },
+    {
+      "sequence_no": 2,
+      "tool_name": "fs.write",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "bbd2cdff1d897fac82cb0bb9bcec1e1a6478e7d552f1819a415cfe07c3ac6e0b"
+    },
+    {
+      "sequence_no": 3,
+      "tool_name": "artifact.publish",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "70329a49813aeab456a4471482d8c5ad5008c9d8c9d8be47edd25d2b6804e4ff"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b",
+      "uri": "artifact://4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b",
+      "size": 233,
+      "source_path": "summary.txt",
+      "run_id": "run_c7a9432f2e2a47de"
+    }
+  ],
+  "artifact_checks": [
+    {
+      "verified": true,
+      "artifact_hash": "4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b",
+      "actual_hash": "4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b",
+      "size": 233
+    }
+  ],
+  "unbacked_artifact_refs": [],
+  "task_state": "EXECUTING",
+  "model_calls_used": 4,
+  "internal_task_id": "task_70f5daf0266443b8"
+}

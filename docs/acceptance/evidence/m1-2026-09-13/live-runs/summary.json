@@ -1,0 +1,82 @@
+{
+  "dry_run": false,
+  "model": "deepseek-flash",
+  "base_url": "https://api.deepseek.com",
+  "runs": 6,
+  "passed": 6,
+  "gate_met": true,
+  "records": [
+    {
+      "task_id": "k1",
+      "attempt": 1,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 8.09,
+      "model_calls_used": 5,
+      "artifact_hashes": [
+        "4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k1",
+      "attempt": 2,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 5.6,
+      "model_calls_used": 4,
+      "artifact_hashes": [
+        "4594bb7df2a2c00b8d1007c9632f826d32770669acbab39dfef1f066336f910b"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k2",
+      "attempt": 1,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 12.09,
+      "model_calls_used": 7,
+      "artifact_hashes": [
+        "29e3910b9b4e2d93c3b5fe4a44ac510e46eeb1d4fa98ec2273f518534a06389a"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k2",
+      "attempt": 2,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 9.08,
+      "model_calls_used": 6,
+      "artifact_hashes": [
+        "fca117fa1084963bf5b15226b8b7d6a7b3816c75b54684497ac696811507b2f5"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k3",
+      "attempt": 1,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 10.58,
+      "model_calls_used": 7,
+      "artifact_hashes": [
+        "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k3",
+      "attempt": 2,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 11.08,
+      "model_calls_used": 7,
+      "artifact_hashes": [
+        "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772"
+      ],
+      "error": null
+    }
+  ]
+}
