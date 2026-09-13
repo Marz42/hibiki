@@ -1,0 +1,24 @@
+HIBIKI M1 acceptance environment (pre-live-model measurements)
+date_utc=2026-09-13T10:34:31Z
+head_commit=61bdc0d32fa5fbbeecc1600959e10147e60939b1
+source_tree_sha256=4D418FC16A4AA3A73A5B13DA0E8439C5A7CC0A9E25CCCFD0FFD41FFDADEC6106
+uv_lock_sha256=B0403C264DDA1F7AFC6E38788395F4F8F69C45EA36D78B8DF0FE341BB97EE335
+os=Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41
+os_release=Debian GNU/Linux 13 (trixie)
+cpu=x86_64
+logical_cpus=16
+python=3.12.12 (uv .venv)
+sqlite=3.50.4 (stdlib bundled with CPython)
+docker=28.5.1 (Docker Desktop, rootful inside its VM; no rootless mode on this host)
+sandbox_image=hibiki-sandbox:py312 (python:3.12-slim + pytest 9.1.1, built locally)
+adapters=ApiAgentAdapter (real worker), FakeAgentAdapter, FakeExternalAdapter
+model_under_test=fake-model via http://127.0.0.1:8770/v1 (local OpenAI-compatible double; the live gate needs operator credentials)
+network=offline for the suite; the harness smoke talks to 127.0.0.1 only
+command_full_suite=uv run --no-sync pytest tests/ -vv --junitxml=docs/acceptance/evidence/m1-2026-09-13/junit-full.xml
+result_full_suite=233 tests, 0 failures, 0 errors, 0 skipped, 104.681s
+command_h_cases=uv run --no-sync pytest tests/m1 -q --junitxml=.../junit-h022-h032.xml
+result_h_cases=18 tests (H-022..H-032 + fixed-task fixtures), 0 failures
+command_harness_smoke=HIBIKI_MODEL_BASE_URL=http://127.0.0.1:8770/v1 HIBIKI_MODEL_API_KEY=sk-fake HIBIKI_MODEL=fake-model uv run --no-sync python -m hibiki.interfaces.m1_runner --data-dir /tmp/m1-acc --out .../harness-runs --repeats 2
+result_harness_smoke=6/6 runs passed (gate MET)
+stop_budget=[M1-G5] stop request -> confirmed executor exit: 0.17s (sleep 30); [M1-G5] pause_task -> executor exit: 0.21s (sleep 30)
+note=these are pre-credential measurements; the live §24.4 gate requires the operator's model credentials

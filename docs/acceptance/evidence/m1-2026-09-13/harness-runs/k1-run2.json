@@ -1,0 +1,77 @@
+{
+  "task_id": "k1",
+  "attempt": 2,
+  "ok": true,
+  "workspace": "/tmp/m1-acc/k1/run2/workspaces/ws_k1_wu1",
+  "seed_files": [
+    "input.txt"
+  ],
+  "run_id": "run_5f42d77659804e6d",
+  "elapsed_s": 0.56,
+  "run_status": "SUCCEEDED",
+  "terminal_reason": null,
+  "spec_hash": "de00b83c21e5e5f6ccdd7e5700fccce2903951a5bb4106ccf065bcd9b99f92c6",
+  "context_manifest_id": "ctx_b58c7273f5194164",
+  "granted_tools": [
+    "fs.read",
+    "fs.list",
+    "fs.write",
+    "artifact.publish"
+  ],
+  "result": {
+    "acceptance_evidence": [],
+    "artifact_refs": [
+      "f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac"
+    ],
+    "outcome": "COMPLETED",
+    "summary": "Wrote summary.txt with three bullets and published it. artifact_refs=[\"f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac\"]",
+    "verdict": "PASS"
+  },
+  "tool_invocations": [
+    {
+      "sequence_no": 1,
+      "tool_name": "fs.read",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "82f9054a785d7a1a04e1eae2bbbf9dc46f46f76bbc0243ea2350a65795cf40de"
+    },
+    {
+      "sequence_no": 2,
+      "tool_name": "fs.write",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "016135fb9c94bf4856a6cb8561c2bb462d6a65848645495948b0aea463652740"
+    },
+    {
+      "sequence_no": 3,
+      "tool_name": "artifact.publish",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "ae188f1fc658a8ecaf5242f00e8e8070819fad46a55c136ad1f96f13f691ff94"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac",
+      "uri": "artifact://f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac",
+      "size": 217,
+      "source_path": "summary.txt",
+      "run_id": "run_5f42d77659804e6d"
+    }
+  ],
+  "artifact_checks": [
+    {
+      "verified": true,
+      "artifact_hash": "f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac",
+      "actual_hash": "f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac",
+      "size": 217
+    }
+  ],
+  "unbacked_artifact_refs": [],
+  "task_state": "EXECUTING",
+  "model_calls_used": 4,
+  "internal_task_id": "task_77a80884b0f5450a"
+}

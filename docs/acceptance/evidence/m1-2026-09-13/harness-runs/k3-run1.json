@@ -1,0 +1,87 @@
+{
+  "task_id": "k3",
+  "attempt": 1,
+  "ok": true,
+  "workspace": "/tmp/m1-acc/k3/run1/workspaces/ws_k3_wu1",
+  "seed_files": [
+    "sample.py",
+    "test_sample.py"
+  ],
+  "run_id": "run_944b1bebc6f44c8f",
+  "elapsed_s": 1.05,
+  "run_status": "SUCCEEDED",
+  "terminal_reason": null,
+  "spec_hash": "93f72f77a7e6a2f4d49e92422cf5fcde49b78237ba8b225c9d76bdb7aac4b375",
+  "context_manifest_id": "ctx_fde415cb3b1145f6",
+  "granted_tools": [
+    "fs.read",
+    "fs.list",
+    "fs.write",
+    "shell.run",
+    "artifact.publish"
+  ],
+  "result": {
+    "acceptance_evidence": [],
+    "artifact_refs": [
+      "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772"
+    ],
+    "outcome": "COMPLETED",
+    "summary": "Fixed add() and the sample tests pass. artifact_refs=[\"ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772\"]",
+    "verdict": "PASS"
+  },
+  "tool_invocations": [
+    {
+      "sequence_no": 1,
+      "tool_name": "fs.read",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "bf291809117c9624087b1324ff457a59f130ed09ef80e1a8c525607a16722e94"
+    },
+    {
+      "sequence_no": 2,
+      "tool_name": "fs.write",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "e9faf9f8b3c973aa14434d5cf8c8a14125da5acf1a40bd3a8776e6d8e00a5282"
+    },
+    {
+      "sequence_no": 3,
+      "tool_name": "shell.run",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "b5836f12308e2c619a2cf902717f5992aa586dcf28b3b3c1a542656ff26b5b39"
+    },
+    {
+      "sequence_no": 4,
+      "tool_name": "artifact.publish",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "bf291809117c9624087b1324ff457a59f130ed09ef80e1a8c525607a16722e94"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+      "uri": "artifact://ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+      "size": 32,
+      "source_path": "sample.py",
+      "run_id": "run_944b1bebc6f44c8f"
+    }
+  ],
+  "artifact_checks": [
+    {
+      "verified": true,
+      "artifact_hash": "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+      "actual_hash": "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+      "size": 32
+    }
+  ],
+  "unbacked_artifact_refs": [],
+  "task_state": "EXECUTING",
+  "model_calls_used": 5,
+  "internal_task_id": "task_d521cd816680491b"
+}

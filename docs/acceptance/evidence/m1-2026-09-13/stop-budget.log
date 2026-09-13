@@ -1,0 +1,36 @@
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+.INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+.INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+[M1-G5] stop request -> confirmed executor exit: 0.17s (sleep 30)
+.INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+[M1-G5] pause_task -> executor exit: 0.21s (sleep 30)
+.
+4 passed, 9 deselected in 3.26s

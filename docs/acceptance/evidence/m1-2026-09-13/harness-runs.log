@@ -1,0 +1,7 @@
+[PASS] k1 run1 status=SUCCEEDED elapsed=0.59s -> docs/acceptance/evidence/m1-2026-09-13/harness-runs/k1-run1.json
+[PASS] k1 run2 status=SUCCEEDED elapsed=0.56s -> docs/acceptance/evidence/m1-2026-09-13/harness-runs/k1-run2.json
+[PASS] k2 run1 status=SUCCEEDED elapsed=0.56s -> docs/acceptance/evidence/m1-2026-09-13/harness-runs/k2-run1.json
+[PASS] k2 run2 status=SUCCEEDED elapsed=0.56s -> docs/acceptance/evidence/m1-2026-09-13/harness-runs/k2-run2.json
+[PASS] k3 run1 status=SUCCEEDED elapsed=1.05s -> docs/acceptance/evidence/m1-2026-09-13/harness-runs/k3-run1.json
+[PASS] k3 run2 status=SUCCEEDED elapsed=1.05s -> docs/acceptance/evidence/m1-2026-09-13/harness-runs/k3-run2.json
+gate: 6/6 runs passed (MET, need >=5/6)
