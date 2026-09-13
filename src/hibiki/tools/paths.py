@@ -156,6 +156,20 @@ class WorkspacePaths:
         finally:
             os.close(parent_fd)
 
+    def read_bytes(self, relative: str, *, max_bytes: int | None = None) -> tuple[bytes, str]:
+        """Read a file and hash the *same* descriptor (no check-then-open race).
+
+        Callers must use these bytes rather than re-opening ``resolve_for_read``: the
+        path could be swapped for a symlink between validation and use.
+        """
+        with self.open_for_read(relative) as handle:
+            data = handle.read() if max_bytes is None else handle.read(max_bytes)
+        return data, hashlib.sha256(data).hexdigest()
+
+    def write_bytes(self, relative: str, data: bytes, *, mode: int = 0o644) -> str:
+        """Write bytes through the safe walk; returns the sha256 of ``data``."""
+        return self.atomic_write(relative, data, mode=mode)
+
     def atomic_write(self, relative: str, content: bytes, *, mode: int = 0o644) -> str:
         """Write ``content`` atomically inside the walked directory; return its sha256.
 

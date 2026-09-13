@@ -30,7 +30,7 @@ class ScriptedClient:
         self.calls: list[list] = []
         self._lock = threading.Lock()
 
-    def chat(self, messages, *, tools=None, temperature=0.0):
+    def chat(self, messages, *, tools=None, temperature=0.0, timeout_s=None):
         with self._lock:
             self.call_count += 1
             self.calls.append(list(messages))

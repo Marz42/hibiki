@@ -133,7 +133,7 @@ def test_recovery_worker_crash_marks_run_lost_and_recovers_the_work_unit(tmp_pat
             self.entered = threading.Event()
             self.release = threading.Event()
 
-        def chat(self, messages, *, tools=None, temperature=0.0):
+        def chat(self, messages, *, tools=None, temperature=0.0, timeout_s=None):
             self.entered.set()
             self.release.wait(30)
             raise RuntimeError("executor vanished")

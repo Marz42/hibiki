@@ -169,6 +169,9 @@ class ApiAgentAdapter(AgentAdapter):
         self.poll_interval_s = float(poll_interval_s)
         #: Overridable by tests / operators; how long ``stop`` waits for the thread.
         self.stop_wait_s = 5.0
+        #: Ceiling for a single model call, so a stop is not held open by the provider.
+        self.model_call_timeout_s = 60.0
+        self.stop_model_call_timeout_s = 10.0
         self._lock = threading.RLock()
         self._runs: dict[str, _RunRecord] = {}
         self._revoked_ids: set[str] = set()
@@ -348,6 +351,9 @@ class ApiAgentAdapter(AgentAdapter):
         messages = self._build_messages(spec, run_input, auth, record.run_id)
         granted = list(spec.get("granted_tools") or run_input.get("granted_tools") or [])
         tools = _tool_schemas(granted)
+        wall_deadline = time.monotonic() + max(
+            int(spec.get("wall_timeout_seconds") or 0), 0
+        )
         turn_budget = max(1, min(self.max_turns, int(spec.get("max_turns") or self.max_turns)))
         call_budget = max(
             1,
@@ -359,17 +365,26 @@ class ApiAgentAdapter(AgentAdapter):
         for _turn in range(turn_budget):
             if record.stop_event.is_set():
                 return None, None
+            if spec.get("wall_timeout_seconds") and time.monotonic() > wall_deadline:
+                error = "run_wall_timeout_exceeded"
+                break
             self._drain_pending(record, messages)
             if record.stop_event.is_set():
                 return None, None
             if record.model_calls >= call_budget:
                 error = "model_call_budget_exhausted"
                 break
-            self._record_model_usage(record, auth, spec)
+            budget_error = self._record_model_usage(record, auth, spec)
+            if budget_error:
+                error = budget_error
+                break
             record.model_calls += 1
             try:
                 reply: ModelReply = self._client.chat(
-                    messages, tools=tools or None, temperature=0.0
+                    messages,
+                    tools=tools or None,
+                    temperature=0.0,
+                    timeout_s=self._model_call_timeout(spec, wall_deadline),
                 )
             except ModelClientError as exc:
                 error = f"{type(exc).__name__}: {exc}"
@@ -389,6 +404,9 @@ class ApiAgentAdapter(AgentAdapter):
                 return None, None
             if not reply.tool_calls:
                 final_content = reply.content or ""
+                if not final_content.strip():
+                    # An empty completion is not a delivered result (SPEC §8.3).
+                    error = "empty_model_completion"
                 break
             for call in reply.tool_calls:
                 if record.stop_event.is_set():
@@ -471,12 +489,33 @@ class ApiAgentAdapter(AgentAdapter):
             if record.error is None:
                 record.error = f"confirm_run_exit_failed: {type(exc).__name__}: {exc}"
 
+    def _model_call_timeout(self, spec: dict[str, Any], wall_deadline: float) -> float:
+        """Cap one model call by the remaining wall clock and the stop grace period.
+
+        A Pause/Cancel must not be held open by a long provider response, and the Run's
+        frozen wall timeout must actually bound the loop rather than being decorative.
+        """
+        remaining = max(wall_deadline - time.monotonic(), 0.0)
+        budget = float(spec.get("wall_timeout_seconds") or 0) or float(
+            self.model_call_timeout_s
+        )
+        if remaining > 0:
+            budget = min(budget, remaining) if budget else remaining
+        stop_cap = float(getattr(self, "stop_model_call_timeout_s", 10.0))
+        if stop_cap > 0:
+            budget = min(budget, stop_cap) if budget else stop_cap
+        return max(budget, 0.5)
+
     def _record_model_usage(
         self, record: _RunRecord, auth: AuthContext, spec: dict[str, Any]
-    ) -> None:
-        """Count every model call so the Core's budget accounting stays truthful."""
+    ) -> str | None:
+        """Account a model call. Returns an error string when the budget is spent.
+
+        The Core owns the ceiling (SPEC §16.2); the worker must obey its refusal instead
+        of spending a call the Task is not authorised to make.
+        """
         try:
-            self._core.execute(
+            response = self._core.execute(
                 "record_model_usage",
                 auth,
                 {
@@ -485,8 +524,11 @@ class ApiAgentAdapter(AgentAdapter):
                     "calls": 1,
                 },
             )
-        except Exception:  # noqa: BLE001 - accounting must never abort the loop
-            pass
+        except Exception as exc:  # noqa: BLE001 - accounting must never abort the loop
+            return f"model_usage_unrecorded: {type(exc).__name__}: {exc}"
+        if getattr(response, "ok", True):
+            return None
+        return response.error_code or "model_usage_rejected"
 
     # ------------------------------------------------------------------
     # Tool dispatch

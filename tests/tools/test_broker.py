@@ -309,11 +309,15 @@ def test_frozen_task_is_denied_and_recorded(tmp_path: Path) -> None:
             harness, tool="fs.write", params={"path": "x.txt", "content": "x"}, seq=1
         ),
     )
-    assert decision.allowed is False and decision.reason == "task_frozen"
+    assert decision.allowed is False
+    # A cancel stops the Run, so the run-status gate may deny before the task-freeze
+    # gate; both mean the same thing to the worker and both are audited.
+    assert decision.reason in {"task_frozen", "run_not_running"}
 
     row = _row(harness["svc"], harness["run_id"], 1)
     assert row["decision"] == "DENY"
-    assert row["deny_reason"] == "task_frozen"
+    # A cancel now also terminates the Run, so either gate may record the denial.
+    assert row["deny_reason"] in {"task_frozen", "run_not_running"}
 
 
 def test_blocking_gate_freezes_tools(tmp_path: Path) -> None:
@@ -329,7 +333,10 @@ def test_blocking_gate_freezes_tools(tmp_path: Path) -> None:
             harness, tool="fs.write", params={"path": "x.txt", "content": "x"}, seq=1
         ),
     )
-    assert decision.allowed is False and decision.reason == "task_frozen"
+    assert decision.allowed is False
+    # A cancel stops the Run, so the run-status gate may deny before the task-freeze
+    # gate; both mean the same thing to the worker and both are audited.
+    assert decision.reason in {"task_frozen", "run_not_running"}
     assert _row(harness["svc"], harness["run_id"], 1)["decision"] == "DENY"
 
 

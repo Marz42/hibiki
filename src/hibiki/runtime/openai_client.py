@@ -144,7 +144,13 @@ class OpenAICompatibleClient:
         *,
         tools: list[dict] | None = None,
         temperature: float = 0.0,
+        timeout_s: float | None = None,
     ) -> ModelReply:
+        """One completion call.
+
+        ``timeout_s`` caps this call only (it may tighten, never extend, the client
+        timeout) so a stop request cannot be held open by a long provider response.
+        """
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [self._dump_message(message) for message in messages],

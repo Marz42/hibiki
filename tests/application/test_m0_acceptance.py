@@ -579,7 +579,17 @@ def test_h018_budget_gate(tmp_path):
         },
     )
     svc.execute("activate_minimal_plan", auth, {"task_id": task_id})
-    svc.execute("record_model_usage", auth, {"task_id": task_id, "calls": 2})
+    # Spend the budget through the Run-bound runtime credential the Core requires.
+    first = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
+    run_id = first.data["created_runs"][0]
+    worker = run_auth(svc, run_id)
+    r = svc.execute(
+        "record_model_usage",
+        worker,
+        {"task_id": task_id, "run_id": run_id, "calls": 2},
+    )
+    assert r.ok and r.data["model_calls_used"] == 2
+    # The next dispatch must be refused by the resource gate.
     r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
     assert not r.ok
     assert r.error_code == "resource_limit"

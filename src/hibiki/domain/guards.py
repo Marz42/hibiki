@@ -26,6 +26,7 @@ INTERNAL_ONLY_OPS = frozenset(
         "heartbeat",
         "publish_artifact",
         "context_append",
+        "record_model_usage",
     }
 )
 

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from hibiki.domain.defaults import DEFAULTS
 from hibiki.domain.enums import (
+    ActorType,
     AgentRunStatus,
     AssignmentKind,
     ContractStatus,
@@ -79,6 +80,7 @@ from hibiki.persistence.models import (
     RunInputRow,
     SideEffectRow,
     TaskRow,
+    ToolInvocationRow,
     WorkspaceRow,
     WorkUnitExecutionRow,
     WorkUnitSpecRow,
@@ -122,6 +124,7 @@ def _mandatory_context_bytes(
     dependency_refs: list[dict[str, Any]],
     workspace_root: str | None,
     workspace_id: str | None,
+    dependency_task_id: str | None = None,
 ) -> int:
     """Measure the fixed inputs so overflow can be refused instead of truncated.
 
@@ -137,9 +140,15 @@ def _mandatory_context_bytes(
         if kind in {"artifact", "dependency_result"}:
             digest = ref.get("hash") or ref.get("artifact_hash")
             if digest:
-                row = session.get(ArtifactRow, (ref.get("task_id"), digest))
-                if row is not None and row.size_bytes:
-                    total += int(row.size_bytes)
+                # Dependency refs carry no task_id; the caller's task is the only
+                # registered owner of a hash for this Task.
+                for task_id in filter(None, (ref.get("task_id"), dependency_task_id)):
+                    row = session.get(
+                        ArtifactRow, {"task_id": task_id, "artifact_hash": digest}
+                    )
+                    if row is not None and row.size_bytes:
+                        total += int(row.size_bytes)
+                        break
         elif kind == "workspace_file" and ref.get("ref"):
             if workspace_root and workspace_id:
                 candidate = Path(workspace_root) / workspace_id / str(ref["ref"])
@@ -796,6 +805,49 @@ class ApplicationService:
         if wu is None or wu.status != WorkUnitStatus.RUNNING:
             return
         now = self.clock.now()
+        # A lost Run may have produced an external effect; the policy decides whether a
+        # retry is safe (SPEC §17 / §19.1).
+        # "Effect" means anything that may have reached the outside world: a submitted
+        # result, an executed command/publish tool, or an artifact registered by this Run
+        # (publication goes through the Core, not always through the Broker).
+        had_effect = (
+            bool(run.result_ref)
+            or session.scalars(
+                select(ToolInvocationRow).where(
+                    ToolInvocationRow.run_id == run.run_id,
+                    ToolInvocationRow.tool_name.in_(["shell.run", "artifact.publish"]),
+                    ToolInvocationRow.decision == "ALLOW",
+                    ToolInvocationRow.outcome == "ok",
+                )
+            ).first()
+            is not None
+            or session.scalars(
+                select(ArtifactRow).where(
+                    ArtifactRow.run_id == run.run_id,
+                    ArtifactRow.artifact_uri.is_not(None),
+                )
+            ).first()
+            is not None
+        )
+        decision = lost_run_recovery_policy(
+            has_effect=had_effect,
+            attempts=wu.attempt_count,
+            max_attempts=DEFAULTS.max_work_unit_attempts,
+        )
+        if decision == "BLOCKED" and had_effect:
+            wu.status = transition_work_unit(WorkUnitStatus.RUNNING, "run.blocked")
+            wu.blocked_reason = "lost_run_effect_unknown"
+            wu.next_retry_at = None
+            task_row = session.get(TaskRow, run.task_id)
+            if task_row and not is_terminal_task(TaskState(task_row.state)):
+                if TaskState(task_row.state) != TaskState.WAITING_HUMAN:
+                    self._set_task_state(
+                        session,
+                        task_row,
+                        "blocking_gate.opened",
+                        reason=WaitingReason.EXECUTION_UNCERTAIN,
+                    )
+            return
         if wu.attempt_count >= DEFAULTS.max_work_unit_attempts:
             wu.status = transition_work_unit(WorkUnitStatus.RUNNING, "run.blocked")
             wu.blocked_reason = "attempts_exhausted"
@@ -2197,7 +2249,12 @@ class ApplicationService:
                 )
             },
             "mandatory_bytes": _mandatory_context_bytes(
-                session, mandatory, dependency_refs, self.workspace_root, workspace_id
+                session,
+                mandatory,
+                dependency_refs,
+                self.workspace_root,
+                workspace_id,
+                task.task_id,
             ),
             "work_unit_objective": spec_row.objective if spec_row else None,
             "workspace_id": workspace_id,
@@ -2244,13 +2301,13 @@ class ApplicationService:
         # bytes are hashed here so the append cannot claim content it did not read.
         if run_input is not None and _looks_like_relative_path(ref):
             try:
-                host_path = self._resolve_workspace_relative(run_input.workspace_id or "", ref)
+                content, digest = self._read_workspace_bytes(
+                    session, run, ref, workspace_id=run_input.workspace_id
+                )
             except (PreconditionError, NotFoundError) as exc:
                 raise PreconditionError(
                     f"context ref refused: {exc}", code="context_ref_refused"
                 ) from exc
-            content = host_path.read_bytes()
-            digest = hashlib.sha256(content).hexdigest()
             if content_hash_value is not None and str(content_hash_value) != digest:
                 raise ConflictError(
                     "context ref hash mismatch", code="context_hash_mismatch"
@@ -2391,14 +2448,50 @@ class ApplicationService:
                 code="authorization_denied",
             )
 
+    def _is_stopped_run_result(self, auth: AuthContext, run: AgentRunRow) -> bool:
+        """True when a correctly bound runtime credential reports on a stopped Run.
+
+        The stop path makes the Run terminal, so the executor can no longer act (the
+        broker refuses tools on a non-RUNNING Run). A result that still arrives is a
+        late fact, not an authorization violation — it must never advance state.
+        """
+        if auth.actor_type != ActorType.INTERNAL:
+            return False
+        if (
+            auth.bound_task_id != run.task_id
+            or auth.bound_run_id != run.run_id
+            or auth.actor_id != run.agent_instance_id
+        ):
+            return False
+        return is_terminal_run(AgentRunStatus(run.status))
+
     def _submit_result(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         run = session.get(AgentRunRow, payload["run_id"])
         if run is None:
             raise NotFoundError("run not found", code="run_not_found")
-        self._assert_run_write_binding(session, auth, run, payload)
         task = self._get_task(session, run.task_id)
+        if self._is_stopped_run_result(auth, run):
+            # The executor was stopped, so its result is a late fact: record it, emit the
+            # event, and change nothing else (SPEC §6.3 / §17).
+            run.late_arrival = True
+            run.result_json = canonical_json(payload.get("result") or {})
+            self._append_event(
+                session,
+                task.task_id,
+                "run.late_result_after_stop",
+                auth_actor=auth.actor_id,
+                payload={"run_id": run.run_id, "reason": run.terminal_reason or "stopped"},
+            )
+            return CommandResult.success(
+                {
+                    "run_id": run.run_id,
+                    "late_arrival": True,
+                    "accepted_as_history": True,
+                }
+            )
+        self._assert_run_write_binding(session, auth, run, payload)
 
         # fencing / late arrival
         if run.work_unit_id:
@@ -2519,6 +2612,16 @@ class ApplicationService:
         if run.work_unit_id:
             wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
             assert wu is not None
+            # Register first so the verified-delivery check below sees exactly what the
+            # Core holds: an Artifact row exists, but only rows with stored content
+            # (an `artifact_uri`) count as a delivery (SPEC §11.3 / §19.1).
+            self._register_result_artifacts(
+                session,
+                task.task_id,
+                run,
+                result,
+                apply_to_work_unit=(outcome != "BLOCKED"),
+            )
             if outcome == "BLOCKED":
                 wu.status = transition_work_unit(WorkUnitStatus.RUNNING, "run.blocked")
                 wu.blocked_reason = ",".join(result.get("blockers") or ["blocked"])
@@ -2527,21 +2630,21 @@ class ApplicationService:
                 wu.selected_result_ref = run.result_ref
                 wu.selected_verdict = result.get("verdict")
                 refs = result.get("verified_artifact_refs") or result.get("artifact_refs") or []
-                if refs:
-                    wu.verified_artifact_hash = refs[0] if isinstance(refs[0], str) else refs[0].get(
-                        "hash"
+                for ref in refs:
+                    candidate = ref if isinstance(ref, str) else (ref or {}).get("hash")
+                    if not candidate:
+                        continue
+                    row = session.get(
+                        ArtifactRow,
+                        {"task_id": task.task_id, "artifact_hash": str(candidate)},
                     )
+                    if row is not None and row.artifact_uri:
+                        wu.verified_artifact_hash = str(candidate)
+                        break
             wu.active_run_id = None
             marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
             if marker:
                 session.delete(marker)
-            self._register_result_artifacts(
-                session,
-                task.task_id,
-                run,
-                result,
-                apply_to_work_unit=True,
-            )
             # Result completion ≠ executor exit: keep Workspace ownership until
             # confirm_run_exit / stop acknowledgment (§8.2).
 
@@ -3635,13 +3738,37 @@ class ApplicationService:
     def _record_model_usage(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
-        task = self._get_task(session, payload["task_id"])
-        task.model_calls_used += int(payload.get("calls") or 1)
+        """Account a model call and enforce the per-Task ceiling (SPEC §16.2).
+
+        The ceiling is checked at the single accounting point, so a Run cannot spend
+        past the Task budget by looping in the worker or by starting another Run. The
+        credential must be a runtime credential bound to the Run that spent the call.
+        """
+        run = session.get(AgentRunRow, payload["run_id"])
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        self._assert_run_write_binding(session, auth, run, payload, require_fencing=False)
+        task = self._get_task(session, run.task_id)
+        calls = int(payload.get("calls") or 1)
+        if calls < 1:
+            raise PreconditionError("calls must be >= 1", code="invalid_usage")
+        limit = int(task.model_call_limit or 0)
+        _, contract_limits = self._contract_and_limits(session, task)
+        contract_limit = _int_or(contract_limits.get("max_model_calls"), limit or 0)
+        if contract_limit:
+            limit = min(limit, contract_limit) if limit else contract_limit
+        if limit > 0 and task.model_calls_used + calls > limit:
+            return CommandResult.failure(
+                "model_call_budget_exhausted",
+                f"task model call limit {limit} would be exceeded",
+            )
+        task.model_calls_used += calls
         return CommandResult.success(
             {
                 "task_id": task.task_id,
                 "model_calls_used": task.model_calls_used,
-                "limit": task.model_call_limit,
+                "limit": limit,
+                "remaining": max(limit - task.model_calls_used, 0) if limit else None,
             }
         )
 
@@ -4347,6 +4474,21 @@ class ApplicationService:
                     if ws.owner_run_id == run.run_id and ws.state != WorkspaceState.QUARANTINED:
                         ws.state = WorkspaceState.READY
                         ws.owner_run_id = None
+        # SPEC §18.2 / §19.2: a confirmed stop finishes a RUNNING Run too, so it can no
+        # longer execute tools (the broker only serves RUNNING runs), hold Workspace
+        # ownership, or advance a Work Unit. A result that still arrives is history.
+        if stopped and run.status == AgentRunStatus.RUNNING:
+            run.status = AgentRunStatus.CANCELLED
+            run.finished_at = self.clock.now()
+            run.terminal_reason = run.terminal_reason or payload.get("reason") or "stopped"
+            self._clear_run_occupancy(session, run, release_workspace=True)
+            if run.work_unit_id:
+                wu = session.get(WorkUnitExecutionRow, run.work_unit_id)
+                if wu is not None and wu.status == WorkUnitStatus.RUNNING:
+                    wu.status = (
+                        WorkUnitStatus.BLOCKED if wu.blocked_reason else WorkUnitStatus.PENDING
+                    )
+                    wu.active_run_id = None
         # Fenced / revoked start that never became RUNNING: settle as CANCELLED
         if run.status == AgentRunStatus.CREATED and stopped:
             run.status = AgentRunStatus.CANCELLED
@@ -4610,10 +4752,54 @@ class ApplicationService:
             raise PreconditionError("artifact store not configured", code="artifact_store_missing")
         return self._artifacts
 
-    def _resolve_workspace_relative(self, workspace_id: str, relative_path: str) -> Path:
-        """Resolve a worker-supplied relative path strictly inside the workspace."""
+    def _assert_workspace_accessible_by_run(
+        self, session: Session, run: AgentRunRow, workspace_id: str
+    ) -> None:
+        """Refuse workspace access that is no longer legitimate for this Run.
+
+        Three cases (SPEC §11.1 / §18.2):
+        - another Run owns the Workspace: refused;
+        - this Run was stopped/revoked: refused, so a killed executor cannot publish or
+          append after its stop even though the Workspace was released;
+        - a released Workspace and a live or normally-finished Run: allowed, because
+          late facts (a publish or append after the run loop ended) are legitimate.
+        """
+        ws = session.get(WorkspaceRow, workspace_id)
+        if ws is None:
+            raise PreconditionError("workspace not found", code="workspace_missing")
+        if ws.owner_run_id is not None and ws.owner_run_id != run.run_id:
+            raise PreconditionError(
+                "workspace is owned by another run", code="workspace_not_owned"
+            )
+        if run.status == AgentRunStatus.CANCELLED:
+            raise PreconditionError(
+                "run was stopped and may no longer touch its workspace",
+                code="run_revoked",
+            )
+
+    def _read_workspace_bytes(
+        self,
+        session: Session,
+        run: AgentRunRow,
+        relative_path: str,
+        *,
+        workspace_id: str | None = None,
+        max_bytes: int | None = None,
+    ) -> tuple[bytes, str]:
+        """Read bytes and hash them from one descriptor inside the Run's workspace.
+
+        Re-opening a previously validated path is a TOCTOU escape: a concurrent writer
+        can swap the file for a symlink between the check and the read, so validation
+        and reading must be the same operation (SPEC §11.2 / §13.2).
+        """
         from hibiki.tools.paths import PathSafetyError, WorkspacePaths
 
+        if workspace_id is None:
+            run_input = session.get(RunInputRow, run.run_id)
+            workspace_id = (run_input.workspace_id if run_input else None) or ""
+        if not workspace_id:
+            raise PreconditionError("run has no workspace", code="workspace_missing")
+        self._assert_workspace_accessible_by_run(session, run, workspace_id)
         if self.workspace_root is None:
             raise PreconditionError("workspace root not configured", code="workspace_missing")
         root = Path(self.workspace_root) / workspace_id
@@ -4621,7 +4807,7 @@ class ApplicationService:
             raise PreconditionError("workspace not materialized", code="workspace_missing")
         try:
             with WorkspacePaths(root) as paths:
-                return Path(paths.resolve_for_read(relative_path))
+                return paths.read_bytes(relative_path, max_bytes=max_bytes)
         except PathSafetyError as exc:
             raise PreconditionError(f"path refused: {exc}", code="artifact_path_refused") from exc
         except FileNotFoundError as exc:
@@ -4665,14 +4851,9 @@ class ApplicationService:
         relative_path = str(payload.get("path") or payload.get("relative_path") or "")
         if not relative_path:
             raise PreconditionError("path required", code="artifact_path_required")
-        host_path = self._resolve_workspace_relative(run_input.workspace_id, relative_path)
-        if not host_path.is_file():
-            raise NotFoundError(
-                f"artifact source not found: {relative_path}", code="artifact_source_missing"
-            )
-
-        content = host_path.read_bytes()
-        digest = hashlib.sha256(content).hexdigest()
+        content, digest = self._read_workspace_bytes(
+            session, run, relative_path, workspace_id=run_input.workspace_id
+        )
         claimed = payload.get("expected_hash") or payload.get("sha256")
         if claimed is not None and str(claimed) != digest:
             raise ConflictError(
@@ -4745,7 +4926,6 @@ class ApplicationService:
 
     def verify_artifact_content(self, task_id: str, artifact_hash: str) -> dict[str, Any]:
         """Recompute the stored bytes' hash and confirm they match the registration."""
-        import hashlib
 
         meta = self.get_artifact(task_id, artifact_hash)
         if not meta["uri"]:

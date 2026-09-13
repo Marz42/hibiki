@@ -603,3 +603,119 @@ def test_h032_worker_without_a_usable_sandbox_never_claims_success(tmp_path):
     final = adapter.inspect(run_id)
     assert final["alive"] in {True, False}
     assert final["identity"] == f"local:{run_id}"
+
+
+# ------------------------------------------- §16.2 model budget enforced by the Core
+
+
+def test_task_model_budget_is_enforced_by_the_core_not_the_worker(tmp_path):
+    """A worker cannot spend past the Task ceiling, even across runs."""
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    r = svc.execute("create_task", auth, {"title": "budget"})
+    task_id = r.data["task_id"]
+    r = svc.execute(
+        "submit_contract",
+        auth,
+        {
+            "task_id": task_id,
+            "objective": "spend calls",
+            "resource_limits": {"max_model_calls": 10},
+        },
+    )
+    assert r.ok, r
+    r = svc.execute(
+        "approve_contract",
+        auth,
+        {
+            "decision_id": r.data["decision_id"],
+            "expected_target_hash": r.data["content_hash"],
+            "expected_target_version": r.data["contract_version"],
+        },
+    )
+    assert r.ok, r
+    svc.execute("activate_minimal_plan", auth, {"task_id": task_id})
+    adapter = _adapter(svc, ScriptedClient([_final("done")]))
+    run_id = _dispatch(svc, adapter, task_id)
+    adapter.wait_for_exit(run_id, 5.0)
+    worker = run_auth(svc, run_id)
+
+    # The Run's frozen spec carries the Contract ceiling.
+    spec = svc.get_run_input(worker, run_id)["spec"]
+    assert spec["model_call_limit"] == 10
+
+    # Pin the accounting to a known starting point: the Run itself spent one call.
+    def _reset_used(session):
+        from hibiki.persistence.models import TaskRow
+
+        session.get(TaskRow, task_id).model_calls_used = 0
+
+    svc.executor.run(_reset_used)
+
+    def _use() -> dict:
+        response = svc.execute(
+            "record_model_usage",
+            worker,
+            {"task_id": task_id, "run_id": run_id, "calls": 1},
+        )
+        return {"ok": response.ok, "code": response.error_code, "data": response.data}
+
+    # Spend exactly up to the Contract ceiling, then one more.
+    calls = [_use() for _ in range(10)]
+    assert all(call["ok"] for call in calls), "the first 10 calls are inside the ceiling"
+    over = _use()
+    assert not over["ok"], "the Core must refuse to spend past the Task ceiling"
+    assert over["code"] == "model_call_budget_exhausted"
+    assert svc.get_task(task_id)["model_calls_used"] == 10
+
+
+def test_worker_stops_when_the_core_refuses_more_model_calls(tmp_path):
+    """The adapter obeys the refusal instead of spending an unauthorised call."""
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    r = svc.execute("create_task", auth, {"title": "budget-stop"})
+    task_id = r.data["task_id"]
+    r = svc.execute(
+        "submit_contract",
+        auth,
+        {
+            "task_id": task_id,
+            "objective": "keep calling",
+            "resource_limits": {"max_model_calls": 1},
+        },
+    )
+    assert r.ok, r
+    r = svc.execute(
+        "approve_contract",
+        auth,
+        {
+            "decision_id": r.data["decision_id"],
+            "expected_target_hash": r.data["content_hash"],
+            "expected_target_version": r.data["contract_version"],
+        },
+    )
+    assert r.ok, r
+    svc.execute("activate_minimal_plan", auth, {"task_id": task_id})
+    # The first call is allowed; the second is refused by the Core, so the loop must
+    # stop and report BLOCKED rather than continue.
+    client = ScriptedClient(
+        [
+            ModelReply(
+                content=None,
+                tool_calls=(_tool_call("fs.list", {"path": "seed"}),),
+                finish_reason="tool_calls",
+                usage={},
+                raw={},
+            ),
+            _final("should never be reached"),
+        ]
+    )
+    adapter = _adapter(svc, client)
+    run_id = _dispatch(svc, adapter, task_id)
+    adapter.wait_for_exit(run_id, 5.0)
+
+    results = _results(svc, task_id)
+    assert results, "a result must still be recorded"
+    assert results[0]["outcome"] == "BLOCKED"
+    assert "model_call" in str(results[0].get("error_class") or "")
+    assert client.call_count == 1, "no call may be made after the Core refuses"

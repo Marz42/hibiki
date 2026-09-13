@@ -237,7 +237,7 @@ class DockerSandboxAdapter(SandboxAdapter):
                     pass
             while True:
                 for stream in (proc.stdout, proc.stderr):
-                    chunk = stream.read() if stream is not None else None
+                    chunk = _safe_read(stream)
                     if chunk:
                         if stream is proc.stdout:
                             raw_out += chunk
@@ -247,25 +247,21 @@ class DockerSandboxAdapter(SandboxAdapter):
                     break
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
-                    container_id = _wait_for_container_id(cidfile)
-                    self._kill_container(container_id)
-                    raw_out += proc.stdout.read() or b""
-                    raw_err += proc.stderr.read() or b""
-                    proc.wait(timeout=spec.limits.stop_grace_s)
+                    raw_out, raw_err = self._stop_container(
+                        proc, cidfile, spec, raw_out, raw_err
+                    )
                     break
                 if time.monotonic() >= deadline:
                     # Docker has no wall-clock flag: kill the container by cid, then
                     # reap the client so no `docker run` process is left behind.
                     timed_out = True
-                    container_id = _wait_for_container_id(cidfile)
-                    self._kill_container(container_id)
-                    raw_out += proc.stdout.read() or b""
-                    raw_err += proc.stderr.read() or b""
-                    proc.wait(timeout=spec.limits.stop_grace_s)
+                    raw_out, raw_err = self._stop_container(
+                        proc, cidfile, spec, raw_out, raw_err
+                    )
                     break
                 time.sleep(0.05)
-            raw_out += proc.stdout.read() or b""
-            raw_err += proc.stderr.read() or b""
+            raw_out += _safe_read(proc.stdout)
+            raw_err += _safe_read(proc.stderr)
             container_id = container_id or _read_cidfile(cidfile)
         stdout = raw_out.decode("utf-8", errors="replace")
         stderr = raw_err.decode("utf-8", errors="replace")
@@ -284,6 +280,36 @@ class DockerSandboxAdapter(SandboxAdapter):
         # a failed command is never reported as success.
         oom_killed = not timed_out and exit_code == 137
         return self._result(status, exit_code, stdout, stderr, started, container_id, oom_killed)
+
+    def _stop_container(
+        self,
+        proc: subprocess.Popen[bytes],
+        cidfile: str,
+        spec: SandboxSpec,
+        raw_out: bytes,
+        raw_err: bytes,
+    ) -> tuple[bytes, bytes]:
+        """Kill the container and guarantee the client process group is reaped.
+
+        If the cidfile is not ready (the daemon is slow or wedged) there is no container
+        id to kill, so the *client* process group is killed instead — otherwise the
+        `docker run` process stays alive holding the Workspace mounted read-write and a
+        retry would become a second writer.
+        """
+        container_id = _wait_for_container_id(cidfile)
+        self._kill_container(container_id)
+        for stream, name in ((proc.stdout, "out"), (proc.stderr, "err")):
+            if stream is None:
+                continue
+            chunk = _safe_read(stream)
+            if name == "out":
+                raw_out += chunk
+            else:
+                raw_err += chunk
+        if container_id is None:
+            # No container id: the client process group is the only handle left.
+            _kill_process_group(proc)
+        return self._reap(proc, spec.limits.stop_grace_s)
 
     def _require_spec(self) -> SandboxSpec:
         if self.spec is None:
@@ -427,6 +453,16 @@ def _wait_for_container_id(cidfile: str) -> str | None:
         if container_id or time.monotonic() >= deadline:
             return container_id
         time.sleep(0.05)
+
+
+def _safe_read(stream: Any) -> bytes:
+    """Read whatever is buffered on a pipe without raising once it is closed."""
+    if stream is None:
+        return b""
+    try:
+        return stream.read() or b""
+    except (ValueError, OSError):
+        return b""
 
 
 def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:

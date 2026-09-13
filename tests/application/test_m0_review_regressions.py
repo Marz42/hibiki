@@ -388,18 +388,21 @@ def test_p1_inbox_dedup_same_message_id(tmp_path):
     svc, _ = make_core(tmp_path)
     human = human_auth()
     task_id, _ = approve_flow(svc, human)
+    dispatched = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = dispatched.data["created_runs"][0]
+    runtime = run_auth(svc, run_id)
     r1 = svc.execute(
         "record_model_usage",
-        human,
-        {"task_id": task_id, "calls": 1},
+        runtime,
+        {"task_id": task_id, "run_id": run_id, "calls": 1},
         message_id="msg-same",
         idempotency_key="k1",
     )
     assert r1.ok
     r2 = svc.execute(
         "record_model_usage",
-        human,
-        {"task_id": task_id, "calls": 1},
+        runtime,
+        {"task_id": task_id, "run_id": run_id, "calls": 1},
         message_id="msg-same",
         idempotency_key="k2",
     )
@@ -408,8 +411,8 @@ def test_p1_inbox_dedup_same_message_id(tmp_path):
     assert svc.count_inbox() >= 1
     r3 = svc.execute(
         "record_model_usage",
-        human,
-        {"task_id": task_id, "calls": 5},
+        runtime,
+        {"task_id": task_id, "run_id": run_id, "calls": 5},
         message_id="msg-same",
         idempotency_key="k3",
     )
@@ -468,7 +471,15 @@ def test_p1_contract_resource_limit_synced(tmp_path):
     )
     assert svc.get_task(task_id)["model_call_limit"] == 1
     svc.execute("activate_minimal_plan", human, {"task_id": task_id})
-    svc.execute("record_model_usage", human, {"task_id": task_id, "calls": 1})
+    first = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
+    run_id = first.data["created_runs"][0]
+    worker = run_auth(svc, run_id)
+    usage = svc.execute(
+        "record_model_usage",
+        worker,
+        {"task_id": task_id, "run_id": run_id, "calls": 1},
+    )
+    assert usage.ok, usage
     d = svc.execute("dispatch_ready_runs", human, {"task_id": task_id})
     assert not d.ok
     assert d.error_code == "resource_limit"
