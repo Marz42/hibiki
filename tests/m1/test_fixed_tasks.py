@@ -77,3 +77,42 @@ def test_k1_and_k2_seeds_are_deterministic_and_small():
     assert len(k1["seed_files"]["input.txt"].splitlines()) == 3
     rows = [r for r in k2["seed_files"]["input.csv"].strip().splitlines()[1:]]
     assert len(rows) == 3
+
+
+def test_runner_dry_run_validates_the_path_without_a_provider(tmp_path):
+    """`--dry-run` proves the harness end to end and never reports a pass."""
+    import json as _json
+
+    from hibiki.interfaces.m1_runner import main as runner_main
+
+    out = tmp_path / "out"
+    data = tmp_path / "data"
+    code = runner_main(
+        [
+            "--dry-run",
+            "--data-dir",
+            str(data),
+            "--out",
+            str(out),
+            "--tasks",
+            str(TASKS_DIR),
+            "--repeats",
+            "1",
+        ]
+    )
+    summary = _json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["dry_run"] is True
+    assert summary["runs"] == 3
+    assert summary["passed"] == 0, "a provider-less run must never be counted as a pass"
+    assert code == 1, "the gate is not met without a real provider"
+
+    # Every run still produced the full record the live gate requires.
+    for record in sorted(out.glob("*-run1.json")):
+        payload = _json.loads(record.read_text(encoding="utf-8"))
+        assert payload["spec_hash"]
+        assert payload["context_manifest_id"]
+        assert payload["granted_tools"]
+        assert payload["result"]["outcome"] == "BLOCKED"
+        assert payload["result"]["verdict"] == "FAIL"
+        assert "empty_model_completion" in payload["result"]["error_class"]
+        assert payload["seed_files"]

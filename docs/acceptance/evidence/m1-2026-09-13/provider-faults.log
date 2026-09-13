@@ -1,0 +1,100 @@
+......INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+.INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+.INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+.INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+F.......INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+[FAIL] k1 run1 status=SUCCEEDED elapsed=0.55s -> /tmp/pytest-of-ventus/pytest-194/test_runner_dry_run_validates_0/out/k1-run1.json
+[FAIL] k2 run1 status=SUCCEEDED elapsed=0.55s -> /tmp/pytest-of-ventus/pytest-194/test_runner_dry_run_validates_0/out/k2-run1.json
+[FAIL] k3 run1 status=SUCCEEDED elapsed=0.55s -> /tmp/pytest-of-ventus/pytest-194/test_runner_dry_run_validates_0/out/k3-run1.json
+gate: 0/3 runs passed (NOT MET, need >=5/6)
+.
+=================================== FAILURES ===================================
+_________________ test_stop_cap_bounds_a_hanging_provider_call _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-ventus/pytest-194/test_stop_cap_bounds_a_hanging0')
+faulty = <function faulty.<locals>._start at 0x7798731a6de0>
+
+    def test_stop_cap_bounds_a_hanging_provider_call(tmp_path, faulty):
+        """Pause/Cancel must not be held open by a hanging provider response."""
+        url = faulty("hang", hang_seconds=60.0)
+        svc, _ = make_core(tmp_path)
+        auth = human_auth()
+        task_id = _task(svc, auth, ["fs.read"])
+        client = OpenAICompatibleClient(url, "sk", "fake-model", timeout_s=30.0, max_retries=0)
+        adapter = _adapter_with_client(svc, client)
+        adapter.stop_model_call_timeout_s = 2.0
+        svc.agent_adapter = adapter
+        r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
+        run_id = r.data["created_runs"][0]
+    
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if any(run["status"] == "RUNNING" for run in svc.list_runs(task_id)):
+                break
+            time.sleep(0.05)
+    
+        requested = time.monotonic()
+        adapter.stop(run_id, "cancel_requested")
+        final = adapter.wait_for_exit(run_id, 15.0)
+        elapsed = time.monotonic() - requested
+        client.close()
+    
+>       assert final["alive"] is False, "the hanging model call was not aborted"
+E       AssertionError: the hanging model call was not aborted
+E       assert True is False
+
+tests/m1/test_provider_faults.py:265: AssertionError
+=========================== short test summary info ============================
+FAILED tests/m1/test_provider_faults.py::test_stop_cap_bounds_a_hanging_provider_call
+1 failed, 17 passed in 29.39s

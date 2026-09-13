@@ -42,6 +42,28 @@ from hibiki.tools.sandbox import DockerSandboxAdapter, SandboxLimits, SandboxSpe
 MODEL_ENV = ("HIBIKI_MODEL_BASE_URL", "HIBIKI_MODEL_API_KEY", "HIBIKI_MODEL")
 
 
+class DryRunClient:
+    """A client that answers without a provider, for validating the harness yourself.
+
+    It never claims success: every completion is empty, which the adapter must turn into
+    a BLOCKED result. Running with ``--dry-run`` therefore proves the task → contract →
+    plan → workspace → dispatch → worker → result path end to end (and that no failure is
+    reported as a pass) without spending a single provider call.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, temperature=0.0, timeout_s=None):
+        from hibiki.runtime.openai_client import ModelReply
+
+        self.calls += 1
+        return ModelReply(content="", tool_calls=(), finish_reason="stop", usage={}, raw={})
+
+    def close(self) -> None:
+        return None
+
+
 @dataclass
 class ModelConfig:
     base_url: str
@@ -326,15 +348,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tasks", type=Path, default=Path("docs/m1/tasks"))
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--clean", action="store_true", help="wipe the data dir first")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the whole harness path without a provider (no credentials needed)",
+    )
     args = parser.parse_args(argv)
 
-    config = ModelConfig.from_env()
+    if args.dry_run:
+        config = ModelConfig(base_url="dry-run", api_key="", model="dry-run")
+    else:
+        config = ModelConfig.from_env()
     if args.clean and args.data_dir.exists():
         shutil.rmtree(args.data_dir)
     args.data_dir.mkdir(parents=True, exist_ok=True)
     args.out.mkdir(parents=True, exist_ok=True)
 
-    client = OpenAICompatibleClient(config.base_url, config.api_key, config.model)
+    client = (
+        DryRunClient()
+        if args.dry_run
+        else OpenAICompatibleClient(config.base_url, config.api_key, config.model)
+    )
     # The adapter re-mounts this spec against each Run's own workspace, so the
     # placeholder path here is never used to run a command.
     sandbox = DockerSandboxAdapter(
@@ -380,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     passed = sum(1 for rec in records if rec.get("ok"))
     summary = {
+        "dry_run": bool(args.dry_run),
         "model": config.model,
         "base_url": config.base_url,
         "runs": len(records),

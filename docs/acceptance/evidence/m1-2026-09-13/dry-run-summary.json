@@ -1,0 +1,70 @@
+{
+  "dry_run": true,
+  "model": "dry-run",
+  "base_url": "dry-run",
+  "runs": 6,
+  "passed": 0,
+  "gate_met": false,
+  "records": [
+    {
+      "task_id": "k1",
+      "attempt": 1,
+      "ok": false,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.59,
+      "model_calls_used": 1,
+      "artifact_hashes": [],
+      "error": null
+    },
+    {
+      "task_id": "k1",
+      "attempt": 2,
+      "ok": false,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 1,
+      "artifact_hashes": [],
+      "error": null
+    },
+    {
+      "task_id": "k2",
+      "attempt": 1,
+      "ok": false,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 1,
+      "artifact_hashes": [],
+      "error": null
+    },
+    {
+      "task_id": "k2",
+      "attempt": 2,
+      "ok": false,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 1,
+      "artifact_hashes": [],
+      "error": null
+    },
+    {
+      "task_id": "k3",
+      "attempt": 1,
+      "ok": false,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 1,
+      "artifact_hashes": [],
+      "error": null
+    },
+    {
+      "task_id": "k3",
+      "attempt": 2,
+      "ok": false,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 1,
+      "artifact_hashes": [],
+      "error": null
+    }
+  ]
+}

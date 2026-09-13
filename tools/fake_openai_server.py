@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -172,8 +173,77 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server: FakeServer
 
+    def _fault(self, request_index: int) -> str | None:
+        """Which fault to apply to this request, if any (see ``--fault``)."""
+        fault = self.server.fault
+        if not fault:
+            return None
+        if self.server.fault_mode == "first" and request_index > 1:
+            return None
+        if self.server.fault_mode == "after" and request_index <= self.server.fault_after:
+            return None
+        return fault
+
     def log_message(self, *args: Any) -> None:  # silence the default access log
         return
+
+    def _apply_fault(self, fault: str) -> None:
+        if fault == "rate_limit":
+            self._send_json(429, {"error": {"message": "slow down", "type": "rate_limit"}})
+        elif fault == "server_error":
+            self._send_json(500, {"error": {"message": "upstream exploded"}})
+        elif fault == "auth":
+            self._send_json(401, {"error": {"message": "bad key"}})
+        elif fault == "bad_request":
+            self._send_json(400, {"error": {"message": "bad request"}})
+        elif fault == "malformed":
+            raw = b'{"choices": [{"message": '  # truncated JSON
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+        elif fault == "no_choices":
+            self._send_json(200, {"id": "x", "object": "chat.completion", "choices": []})
+        elif fault == "truncated_arguments":
+            self._send_json(
+                200,
+                {
+                    "id": "chatcmpl-bad",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {"name": "fs_read", "arguments": '{"path":'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"total_tokens": 1},
+                },
+            )
+        elif fault == "hang":
+            time.sleep(self.server.hang_seconds)
+            self._send_json(200, {"choices": []})
+        else:  # pragma: no cover - defensive
+            self._send_json(500, {"error": {"message": f"unknown fault {fault}"}})
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
 
     def do_POST(self) -> None:  # noqa: N802 — http.server API
         length = int(self.headers.get("content-length") or 0)
@@ -181,6 +251,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.rstrip("/").endswith("/chat/completions"):
             self.send_error(404, "unknown endpoint")
             return
+        with self.server.lock:
+            self.server.request_count += 1
+            request_index = self.server.request_count
+        fault = self._fault(request_index)
+        if fault is not None:
+            self._apply_fault(fault)
+            return
+
         messages = body.get("messages") or []
         model = body.get("model") or ""
         script = script_for(model, messages)
@@ -227,18 +305,55 @@ class Handler(BaseHTTPRequestHandler):
 class FakeServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int]) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        *,
+        fault: str | None = None,
+        fault_mode: str = "always",
+        fault_after: int = 0,
+        hang_seconds: float = 30.0,
+    ) -> None:
         super().__init__(address, Handler)
         self.steps: dict[str, int] = {}
         self.lock = threading.Lock()
+        self.fault = fault
+        self.fault_mode = fault_mode
+        self.fault_after = fault_after
+        self.hang_seconds = hang_seconds
+        self.request_count = 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="fake-openai-server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--fault",
+        default=None,
+        choices=[
+            "rate_limit",
+            "server_error",
+            "auth",
+            "bad_request",
+            "malformed",
+            "no_choices",
+            "truncated_arguments",
+            "hang",
+        ],
+        help="inject a provider fault (for failure-path testing)",
+    )
+    parser.add_argument("--fault-mode", default="always", choices=["always", "first", "after"])
+    parser.add_argument("--fault-after", type=int, default=0)
+    parser.add_argument("--hang-seconds", type=float, default=30.0)
     args = parser.parse_args()
-    server = FakeServer((args.host, args.port))
+    server = FakeServer(
+        (args.host, args.port),
+        fault=args.fault,
+        fault_mode=args.fault_mode,
+        fault_after=args.fault_after,
+        hang_seconds=args.hang_seconds,
+    )
     print(f"fake OpenAI-compatible server on http://{args.host}:{args.port}/v1", flush=True)
     try:
         server.serve_forever()
