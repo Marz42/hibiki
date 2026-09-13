@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -10,7 +11,7 @@ from sqlalchemy.engine import Engine
 from alembic import command
 from hibiki.application.service import ApplicationService
 from hibiki.domain.errors import SchemaStartupError
-from hibiki.domain.ports import Clock
+from hibiki.domain.ports import AgentAdapter, Clock, SandboxAdapter
 from hibiki.persistence.models import (
     create_sqlite_engine,
     ensure_schema_version,
@@ -100,13 +101,22 @@ def bootstrap_core(
     data_dir: Path,
     *,
     clock: Clock | None = None,
-    agent: FakeAgentAdapter | None = None,
+    agent: AgentAdapter | None = None,
     external: FakeExternalAdapter | None = None,
     fake_time: bool = True,
     run_migrate: bool = True,
     acquire_lock: bool = True,
     dispatch_enabled: bool = True,
+    tool_broker: Any | None = None,
+    sandbox: SandboxAdapter | None = None,
 ) -> tuple[ApplicationService, dict]:
+    """Build the Core with its collaborators.
+
+    ``agent`` accepts any :class:`AgentAdapter`, so a caller can run the real
+    ``ApiAgentAdapter`` in place of the Fake without touching the service. When a
+    ``tool_broker`` is supplied it is exposed to the adapter through ``ctx`` only —
+    the Core never executes tools itself.
+    """
     data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "hibiki.db"
     db_url = f"sqlite:///{db_path.as_posix()}"
@@ -141,6 +151,8 @@ def bootstrap_core(
         "agent": agent_adapter,
         "external": external_adapter,
         "artifacts": artifacts,
+        "tool_broker": tool_broker,
+        "sandbox": sandbox,
         "db_url": db_url,
         "data_dir": data_dir,
     }

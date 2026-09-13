@@ -306,14 +306,19 @@ class ApiAgentAdapter(AgentAdapter):
             spec = dict(run_input.get("spec") or {})
             record.spec = {**record.spec, **spec}
             record.task_id = str(spec.get("task_id") or record.task_id or "") or None
-            self._wait_for_running(record)
+            try:
+                self._wait_for_running(record)
+                if record.stop_event.is_set():
+                    return
+                final_content, error = self._loop(record, auth, spec, run_input)
+            except Exception as exc:  # noqa: BLE001 - a crashed loop is never a success
+                error = f"{type(exc).__name__}: {exc}"
+                record.error = error
             if record.stop_event.is_set():
-                return
-            final_content, error = self._loop(record, auth, spec, run_input)
-            if record.stop_event.is_set():
+                # Revoked: never submit a result after revocation.
                 return
             self._submit_result(record, auth, spec, final_content, error)
-        except Exception as exc:  # noqa: BLE001 - a crashed loop is never a success
+        except Exception as exc:  # noqa: BLE001 - setup failure: no run to submit to
             error = f"{type(exc).__name__}: {exc}"
             record.error = error
         finally:

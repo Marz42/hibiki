@@ -246,6 +246,35 @@ def test_model_error_produces_blocked_not_false_success(tmp_path):
     assert svc.get_task(task_id)["model_calls_used"] == 1
 
 
+def test_unexpected_client_exception_is_blocked_not_a_crash(tmp_path):
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    task_id = _task_with_ceiling(svc, auth, ["fs.read"])
+    client = ScriptedClient([RuntimeError("kaboom")])
+    adapter = _adapter(svc, client)
+    run_id = _dispatch(svc, adapter, task_id)
+
+    adapter.wait_for_exit(run_id, 5.0)
+    row = _run_row(svc, task_id, run_id)
+    result = json.loads(row["result_json"])
+    assert result["outcome"] == "BLOCKED"
+    assert "RuntimeError" in result["error_class"]
+
+
+def test_blocked_marker_in_final_message_yields_blocked(tmp_path):
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    task_id = _task_with_ceiling(svc, auth, ["fs.read"])
+    client = ScriptedClient([_final("cannot continue [[HIBIKI:BLOCKED]]")])
+    adapter = _adapter(svc, client)
+    run_id = _dispatch(svc, adapter, task_id)
+
+    adapter.wait_for_exit(run_id, 5.0)
+    result = json.loads(_run_row(svc, task_id, run_id)["result_json"])
+    assert result["outcome"] == "BLOCKED"
+    assert result["verdict"] == "FAIL"
+
+
 def test_tool_call_is_dispatched_through_the_broker(tmp_path):
     svc, _ = make_core(tmp_path)
     auth = human_auth()
