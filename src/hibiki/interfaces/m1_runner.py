@@ -41,6 +41,39 @@ from hibiki.tools.sandbox import DockerSandboxAdapter, SandboxLimits, SandboxSpe
 
 MODEL_ENV = ("HIBIKI_MODEL_BASE_URL", "HIBIKI_MODEL_API_KEY", "HIBIKI_MODEL")
 
+#: File the operator can fill in so no credential has to be typed on the command line.
+#: Real environment variables always win over the file, and the file is gitignored.
+DOTENV_FILENAME = ".env"
+
+
+def load_dotenv(path: Path | None = None) -> dict[str, str]:
+    """Load ``KEY=value`` pairs from ``.env`` into ``os.environ`` (no overrides).
+
+    Minimal on purpose: no dependency, no interpolation, no export of secrets anywhere
+    else. Lines may be blank, ``#`` comments, or ``KEY=value`` with optional surrounding
+    single/double quotes around the value. Returns only the keys it set.
+    """
+    env_path = path or Path(DOTENV_FILENAME)
+    if not env_path.is_file():
+        return {}
+    applied: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ[key] = value
+        applied[key] = value
+    return applied
+
 
 class DryRunClient:
     """A client that answers without a provider, for validating the harness yourself.
@@ -71,11 +104,14 @@ class ModelConfig:
     model: str
 
     @classmethod
-    def from_env(cls) -> ModelConfig:
+    def from_env(cls, *, dotenv: Path | None = None) -> ModelConfig:
+        load_dotenv(dotenv)
         missing = [name for name in MODEL_ENV if not os.environ.get(name)]
         if missing:
             raise SystemExit(
-                "missing credentials: " + ", ".join(missing) + " (set them in the environment)"
+                "missing credentials: "
+                + ", ".join(missing)
+                + f" (fill in {DOTENV_FILENAME} or export them in the environment)"
             )
         return cls(
             base_url=os.environ["HIBIKI_MODEL_BASE_URL"],
@@ -341,6 +377,30 @@ def run_once(
     return record
 
 
+def _check_credentials(config: ModelConfig, args: argparse.Namespace) -> int:
+    """One real call, no task state: is the endpoint reachable and the key accepted?"""
+    from hibiki.runtime.openai_client import ChatMessage, ModelClientError, OpenAICompatibleClient
+
+    client = OpenAICompatibleClient(config.base_url, config.api_key, config.model, timeout_s=30.0)
+    try:
+        reply = client.chat(
+            [
+                ChatMessage(role="system", content="Reply with the single word: ready"),
+                ChatMessage(role="user", content="ping"),
+            ],
+            timeout_s=30.0,
+        )
+    except ModelClientError as exc:
+        print(f"credential check FAILED: {exc.kind}: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        client.close()
+    text = (reply.content or "").strip()
+    print(f"credential check OK: model={config.model} base_url={config.base_url}")
+    print(f"model replied: {text[:200]!r}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hibiki-m1-runner")
     parser.add_argument("--data-dir", type=Path, default=Path("/tmp/hibiki-m1"))
@@ -348,6 +408,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tasks", type=Path, default=Path("docs/m1/tasks"))
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--clean", action="store_true", help="wipe the data dir first")
+    parser.add_argument(
+        "--dotenv",
+        type=Path,
+        default=Path(DOTENV_FILENAME),
+        help="credential file to load (default: .env; real environment wins)",
+    )
+    parser.add_argument(
+        "--check-credentials",
+        action="store_true",
+        help="make one model call to verify the credentials, then exit",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -358,7 +429,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         config = ModelConfig(base_url="dry-run", api_key="", model="dry-run")
     else:
-        config = ModelConfig.from_env()
+        config = ModelConfig.from_env(dotenv=args.dotenv)
+    if args.check_credentials:
+        return _check_credentials(config, args)
     if args.clean and args.data_dir.exists():
         shutil.rmtree(args.data_dir)
     args.data_dir.mkdir(parents=True, exist_ok=True)

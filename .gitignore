@@ -10,3 +10,6 @@ dist/
 *.egg-info/
 .coverage
 htmlcov/
+
+# Local credentials — never commit (see .env.example)
+.env

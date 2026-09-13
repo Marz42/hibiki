@@ -27,6 +27,22 @@ See `HIBIKI_MVP_SPEC_v0.2.1.md` and `docs/adr/`.
   `docs/acceptance/evidence/m1-2026-09-13/`; the executable plan is
   [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
 
+### Running the M1 live-model gate
+
+Fill in `.env` (gitignored; see `.env.example`) with any OpenAI-compatible endpoint, then:
+
+```bash
+uv run --no-sync python -m hibiki.interfaces.m1_runner --check-credentials --out /tmp/check
+uv run --no-sync python -m hibiki.interfaces.m1_runner \
+  --data-dir /tmp/hibiki-m1 --out docs/acceptance/evidence/m1-<date>/live-runs --clean
+```
+
+The first command makes one real call and prints the model's reply (it never prints the key).
+The second runs the three fixed tasks in `docs/m1/tasks/` twice each and writes one JSON
+record per run plus a `summary.json`; the gate is at least 5 of 6 runs with a
+COMPLETED/PASS result, verified artifacts and no fabricated artifact reference.
+Without credentials, `--dry-run` exercises the same path and never reports a pass.
+
 The suite runs offline on Fake adapters only; set `UV_CACHE_DIR` to a writable path when the
 default uv cache is not accessible:
 
