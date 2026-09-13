@@ -7,6 +7,7 @@ from pathlib import Path
 
 from hibiki.application.bootstrap import bootstrap_core
 from hibiki.domain.enums import ActorType
+from hibiki.domain.errors import DomainError, SchemaStartupError
 from hibiki.domain.types import AuthContext
 
 
@@ -111,82 +112,104 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    svc, ctx = bootstrap_core(args.data_dir, fake_time=False)
+    try:
+        svc, ctx = bootstrap_core(args.data_dir, fake_time=False)
+    except SchemaStartupError as exc:
+        print(f"hibiki: refusing to start: {exc}", file=sys.stderr)
+        return 2
     auth = _auth_from_args(args)
     as_json = args.json
 
     try:
-        if args.cmd == "create-task":
-            r = svc.execute(
-                "create_task",
-                auth,
-                {"title": args.title, "intent": args.intent, "task_id": args.task_id},
-                message_id=args.message_id,
-                idempotency_key=args.idempotency_key,
-            )
-        elif args.cmd == "submit-contract":
-            payload = {"task_id": args.task_id}
-            if args.objective:
-                payload["objective"] = args.objective
-            r = svc.execute("submit_contract", auth, payload, message_id=args.message_id)
-        elif args.cmd == "approve-contract":
-            r = svc.execute(
-                "approve_contract",
-                auth,
-                {
-                    "decision_id": args.decision_id,
-                    "expected_target_hash": args.expected_hash,
-                    "expected_target_version": args.expected_version,
-                },
-                message_id=args.message_id,
-            )
-        elif args.cmd == "activate-minimal-plan":
-            r = svc.execute(
-                "activate_minimal_plan", auth, {"task_id": args.task_id}, message_id=args.message_id
-            )
-        elif args.cmd == "dispatch":
-            r = svc.execute(
-                "dispatch_ready_runs", auth, {"task_id": args.task_id}, message_id=args.message_id
-            )
-        elif args.cmd == "submit-result":
-            result = {"outcome": args.outcome}
-            if args.verdict:
-                result["verdict"] = args.verdict
-            r = svc.execute(
-                "submit_result",
-                auth,
-                {"run_id": args.run_id, "result": result},
-                message_id=args.message_id,
-            )
-        elif args.cmd == "get-task":
-            r = svc.get_task(args.task_id)
-            _print(r, as_json)
-            return 0
-        elif args.cmd == "list-runs":
-            r = svc.list_runs(args.task_id)
-            _print(r, as_json)
-            return 0
-        elif args.cmd == "list-events":
-            r = svc.list_events(args.task_id)
-            _print(r, as_json)
-            return 0
-        elif args.cmd == "pause":
-            r = svc.execute("pause_task", auth, {"task_id": args.task_id})
-        elif args.cmd == "resume":
-            r = svc.execute("resume_task", auth, {"task_id": args.task_id})
-        elif args.cmd == "cancel":
-            r = svc.execute("cancel_task", auth, {"task_id": args.task_id})
-        elif args.cmd == "reconcile":
-            r = svc.reconcile()
-            _print(r, as_json)
-            return 0
-        else:
-            parser.error(f"unknown command {args.cmd}")
-            return 2
-        _print(r, as_json)
-        return 0 if getattr(r, "ok", True) else 1
+        return _dispatch(parser, svc, auth, args, as_json)
     finally:
         ctx["lock"].release()
+
+
+def _dispatch(parser, svc, auth, args, as_json: bool) -> int:
+    try:
+        return _run_command(parser, svc, auth, args, as_json)
+    except DomainError as exc:
+        print(f"hibiki: {exc.code}: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_command(parser, svc, auth, args, as_json: bool) -> int:
+    if args.cmd == "create-task":
+        r = svc.execute(
+            "create_task",
+            auth,
+            {"title": args.title, "intent": args.intent, "task_id": args.task_id},
+            message_id=args.message_id,
+            idempotency_key=args.idempotency_key,
+        )
+    elif args.cmd == "submit-contract":
+        payload = {"task_id": args.task_id}
+        if args.objective:
+            payload["objective"] = args.objective
+        r = svc.execute("submit_contract", auth, payload, message_id=args.message_id)
+    elif args.cmd == "approve-contract":
+        r = svc.execute(
+            "approve_contract",
+            auth,
+            {
+                "decision_id": args.decision_id,
+                "expected_target_hash": args.expected_hash,
+                "expected_target_version": args.expected_version,
+            },
+            message_id=args.message_id,
+        )
+    elif args.cmd == "activate-minimal-plan":
+        r = svc.execute(
+            "activate_minimal_plan", auth, {"task_id": args.task_id}, message_id=args.message_id
+        )
+    elif args.cmd == "dispatch":
+        r = svc.execute(
+            "dispatch_ready_runs", auth, {"task_id": args.task_id}, message_id=args.message_id
+        )
+    elif args.cmd == "submit-result":
+        result = {"outcome": args.outcome}
+        if args.verdict:
+            result["verdict"] = args.verdict
+        r = svc.execute(
+            "submit_result",
+            auth,
+            {"run_id": args.run_id, "result": result},
+            message_id=args.message_id,
+        )
+    elif args.cmd == "get-task":
+        r = svc.get_task(args.task_id)
+        _print(r, as_json)
+        return 0
+    elif args.cmd == "list-runs":
+        r = svc.list_runs(args.task_id)
+        _print(r, as_json)
+        return 0
+    elif args.cmd == "list-events":
+        r = svc.list_events(args.task_id)
+        _print(r, as_json)
+        return 0
+    elif args.cmd == "pause":
+        r = svc.execute("pause_task", auth, {"task_id": args.task_id})
+    elif args.cmd == "resume":
+        r = svc.execute("resume_task", auth, {"task_id": args.task_id})
+    elif args.cmd == "cancel":
+        r = svc.execute("cancel_task", auth, {"task_id": args.task_id})
+    elif args.cmd == "reconcile":
+        r = svc.reconcile()
+        _print(r, as_json)
+        return 0
+    else:
+        parser.error(f"unknown command {args.cmd}")
+        return 2
+    _print(r, as_json)
+    if not getattr(r, "ok", True):
+        print(
+            f"hibiki: {r.error_code or 'error'}: {r.error_message or ''}".rstrip(),
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

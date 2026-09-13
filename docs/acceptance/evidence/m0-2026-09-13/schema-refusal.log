@@ -1,0 +1,150 @@
++ rm -rf /tmp/m0-fix/db
++ mkdir -p /tmp/m0-fix/db
++ echo '### A: empty dir -> migrate + start (must succeed)'
+### A: empty dir -> migrate + start (must succeed)
++ run --data-dir /tmp/m0-fix/db/fresh --json create-task --title fresh
++ echo '--- --data-dir /tmp/m0-fix/db/fresh --json create-task --title fresh ---'
+--- --data-dir /tmp/m0-fix/db/fresh --json create-task --title fresh ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/fresh --json create-task --title fresh
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_f2ee9977531d48a1",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
++ echo EXIT=0
+EXIT=0
++ echo '### A2: unrelated table only -> still migrated'
+### A2: unrelated table only -> still migrated
++ mkdir -p /tmp/m0-fix/db/other
++ python3 -c '
+import sqlite3
+c=sqlite3.connect('\''/tmp/m0-fix/db/other/hibiki.db'\''); c.execute('\''create table dummy (id integer)'\''); c.commit()'
++ run --data-dir /tmp/m0-fix/db/other --json create-task --title other
++ echo '--- --data-dir /tmp/m0-fix/db/other --json create-task --title other ---'
+--- --data-dir /tmp/m0-fix/db/other --json create-task --title other ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/other --json create-task --title other
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_935b4d2f4cc34bec",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
++ echo EXIT=0
+EXIT=0
++ echo '### B: schema_meta present, version unknown (no alembic_version)'
+### B: schema_meta present, version unknown (no alembic_version)
++ mkdir -p /tmp/m0-fix/db/badB
++ python3 -c '
+import sqlite3
+c=sqlite3.connect('\''/tmp/m0-fix/db/badB/hibiki.db'\'')
+c.execute("create table schema_meta (key text primary key, value text not null)")
+c.execute("insert into schema_meta values ('\''schema_version'\'','\''m99_future'\'')"); c.commit()'
++ run --data-dir /tmp/m0-fix/db/badB --json get-task --task-id x
++ echo '--- --data-dir /tmp/m0-fix/db/badB --json get-task --task-id x ---'
+--- --data-dir /tmp/m0-fix/db/badB --json get-task --task-id x ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/badB --json get-task --task-id x
+hibiki: refusing to start: schema version unknown; refuse to start: schema_meta.schema_version='m99_future', expected 'm0'. Restore a backup or run 'alembic upgrade head' against the expected schema.
++ echo EXIT=2
+EXIT=2
++ echo '### C: at head but schema_version unknown'
+### C: at head but schema_version unknown
++ mkdir -p /tmp/m0-fix/db/badC
++ uv run --no-sync python -c '
+from hibiki.application.bootstrap import run_migrations
+run_migrations('\''sqlite:////tmp/m0-fix/db/badC/hibiki.db'\'')
+import sqlite3; c=sqlite3.connect('\''/tmp/m0-fix/db/badC/hibiki.db'\'')
+c.execute("update schema_meta set value='\''m99_future'\'' where key='\''schema_version'\''"); c.commit()'
++ run --data-dir /tmp/m0-fix/db/badC --json get-task --task-id x
++ echo '--- --data-dir /tmp/m0-fix/db/badC --json get-task --task-id x ---'
+--- --data-dir /tmp/m0-fix/db/badC --json get-task --task-id x ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/badC --json get-task --task-id x
+hibiki: refusing to start: schema version unknown; refuse to start: schema_meta.schema_version='m99_future', expected 'm0'. Restore a backup or run 'alembic upgrade head' against the expected schema.
++ echo EXIT=2
+EXIT=2
++ echo '### E: alembic revision unknown to this code'
+### E: alembic revision unknown to this code
++ mkdir -p /tmp/m0-fix/db/badE
++ python3 -c '
+import sqlite3
+c=sqlite3.connect('\''/tmp/m0-fix/db/badE/hibiki.db'\'')
+c.execute('\''create table alembic_version (version_num varchar(32) not null)'\'')
+c.execute("insert into alembic_version values ('\''9999_from_the_future'\'')"); c.commit()'
++ run --data-dir /tmp/m0-fix/db/badE --json get-task --task-id x
++ echo '--- --data-dir /tmp/m0-fix/db/badE --json get-task --task-id x ---'
+--- --data-dir /tmp/m0-fix/db/badE --json get-task --task-id x ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/badE --json get-task --task-id x
+hibiki: refusing to start: schema version unknown; refuse to start: database reports Alembic revision '9999_from_the_future', which this code does not know (code heads: ['0004_evidence_sequence']). Restore a backup or run the matching code version.
++ echo EXIT=2
+EXIT=2
++ echo '### G: legacy revision 0002 -> upgrade allowed'
+### G: legacy revision 0002 -> upgrade allowed
++ mkdir -p /tmp/m0-fix/db/legacy
++ uv run --no-sync python -c '
+from alembic.config import Config
+from alembic import command
+from hibiki.application.bootstrap import project_root
+cfg = Config(str(project_root() / '\''alembic.ini'\''))
+cfg.set_main_option('\''sqlalchemy.url'\'', '\''sqlite:////tmp/m0-fix/db/legacy/hibiki.db'\'')
+command.upgrade(cfg, '\''0002_artifacts'\'')'
++ run --data-dir /tmp/m0-fix/db/legacy --json create-task --title legacy
++ echo '--- --data-dir /tmp/m0-fix/db/legacy --json create-task --title legacy ---'
+--- --data-dir /tmp/m0-fix/db/legacy --json create-task --title legacy ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/legacy --json create-task --title legacy
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_c317b74e51f54b46",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
++ echo EXIT=0
+EXIT=0
++ echo '### F: domain error boundary'
+### F: domain error boundary
++ run --data-dir /tmp/m0-fix/db/fresh get-task --task-id nope
++ echo '--- --data-dir /tmp/m0-fix/db/fresh get-task --task-id nope ---'
+--- --data-dir /tmp/m0-fix/db/fresh get-task --task-id nope ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/fresh get-task --task-id nope
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+hibiki: task_not_found: task nope not found
++ echo EXIT=1
+EXIT=1
++ run --data-dir /tmp/m0-fix/db/fresh --principal ua --actor ua --actor-type USER_AGENT approve-contract --decision-id dec_none
++ echo '--- --data-dir /tmp/m0-fix/db/fresh --principal ua --actor ua --actor-type USER_AGENT approve-contract --decision-id dec_none ---'
+--- --data-dir /tmp/m0-fix/db/fresh --principal ua --actor ua --actor-type USER_AGENT approve-contract --decision-id dec_none ---
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/fresh --principal ua --actor ua --actor-type USER_AGENT approve-contract --decision-id dec_none
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+hibiki: authorization_denied: operation 'approve_contract' requires Human actor; got USER_AGENT
+CommandResult(ok=False, data={}, error_code='authorization_denied', error_message="operation 'approve_contract' requires Human actor; got USER_AGENT", replayed=False)
++ echo EXIT=1
+EXIT=1

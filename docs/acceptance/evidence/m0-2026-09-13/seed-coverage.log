@@ -1,0 +1,22 @@
+seeds=100 steps_per_seed=200
+execute_count min=200 max=211 total=20337
+trajectories_with_dispatch=100
+trajectories_with_worker_result=100
+valid_dispatches_total=176
+worker_submissions_total=176
+formal_approvals_per_trajectory_max=1
+final_states: {'ABORTED': 98, 'EXECUTING': 2}
+per-seed execute_count: [203, 203, 205, 203, 203, 203, 203, 205, 203, 203, 203, 203, 203, 203, 203, 203, 200, 203, 203, 203, 205, 202, 206, 205, 203, 203, 203, 205, 207, 203, 203, 203, 205, 202, 202, 203, 202, 205, 203, 203, 203, 203, 205, 205, 203, 203, 202, 202, 211, 205, 204, 202, 205, 204, 203, 203, 203, 202, 203, 203, 203, 202, 203, 203, 203, 203, 203, 202, 202, 202, 205, 205, 203, 205, 205, 203, 205, 202, 203, 203, 203, 203, 203, 203, 203, 203, 203, 202, 203, 205, 203, 202, 203, 203, 205, 205, 203, 203, 203, 203]
+EXIT=0
+total 124
+drwxr-xr-x 2 ventus ventus  4096 Sep 13 16:00 .
+drwxr-xr-x 4 ventus ventus  4096 Sep 13 15:45 ..
+-rw-r--r-- 1 ventus ventus  2708 Sep 13 16:00 cli-lifecycle-tail.log
+-rw-r--r-- 1 ventus ventus 15523 Sep 13 16:00 cli-smoke.log
+-rw-r--r-- 1 ventus ventus 13419 Sep 13 16:00 junit-full.xml
+-rw-r--r-- 1 ventus ventus  3927 Sep 13 16:00 junit-h-catalog.xml
+-rw-r--r-- 1 ventus ventus 11236 Sep 13 16:00 pytest-full.log
+-rw-r--r-- 1 ventus ventus  3580 Sep 13 16:00 pytest-h-catalog.log
+-rw-r--r-- 1 ventus ventus 42292 Sep 13 16:00 ruff.txt
+-rw-r--r-- 1 ventus ventus  8295 Sep 13 16:00 schema-refusal.log
+-rw-r--r-- 1 ventus ventus   810 Sep 13 16:01 seed-coverage.log

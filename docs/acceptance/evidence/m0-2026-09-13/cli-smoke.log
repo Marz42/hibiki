@@ -1,0 +1,289 @@
++ export UV_CACHE_DIR=/tmp/hibiki-uv-cache
++ UV_CACHE_DIR=/tmp/hibiki-uv-cache
++ H='uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json'
++ rm -rf /tmp/m0-fix/db/cli
++ echo '### 1. empty data dir -> migrate on first command'
+### 1. empty data dir -> migrate on first command
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json get-task --task-id missing
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+hibiki: task_not_found: task missing not found
++ echo EXIT=1
+EXIT=1
++ echo '### 2. create-task'
+### 2. create-task
+++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json create-task --title 'M0 CLI smoke'
++ CREATE='{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
++ echo '{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
+++ echo '{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "state": "NEW"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
+++ python3 -c 'import json,sys; print(json.load(sys.stdin)['\''data'\'']['\''task_id'\''])'
++ TASK_ID=task_e78965eb78264c02
++ echo '### 3. submit-contract'
+### 3. submit-contract
+++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json submit-contract --task-id task_e78965eb78264c02
++ SUB='{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "contract_version": 1,
+    "content_hash": "d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580",
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "explanation_id": "expl_93fbb18203b04ef6",
+    "explanation_hash": "f5170a6ea81cd944e98ab9ab2b230441ecccf9a070162af1545c040ca22392ce",
+    "state": "WAITING_HUMAN"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
++ echo '{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "contract_version": 1,
+    "content_hash": "d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580",
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "explanation_id": "expl_93fbb18203b04ef6",
+    "explanation_hash": "f5170a6ea81cd944e98ab9ab2b230441ecccf9a070162af1545c040ca22392ce",
+    "state": "WAITING_HUMAN"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "contract_version": 1,
+    "content_hash": "d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580",
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "explanation_id": "expl_93fbb18203b04ef6",
+    "explanation_hash": "f5170a6ea81cd944e98ab9ab2b230441ecccf9a070162af1545c040ca22392ce",
+    "state": "WAITING_HUMAN"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
+++ echo '{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "contract_version": 1,
+    "content_hash": "d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580",
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "explanation_id": "expl_93fbb18203b04ef6",
+    "explanation_hash": "f5170a6ea81cd944e98ab9ab2b230441ecccf9a070162af1545c040ca22392ce",
+    "state": "WAITING_HUMAN"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
+++ python3 -c 'import json,sys; print(json.load(sys.stdin)['\''data'\'']['\''decision_id'\''])'
++ DEC=dec_8f38a13b3b6147e9
+++ echo '{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "contract_version": 1,
+    "content_hash": "d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580",
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "explanation_id": "expl_93fbb18203b04ef6",
+    "explanation_hash": "f5170a6ea81cd944e98ab9ab2b230441ecccf9a070162af1545c040ca22392ce",
+    "state": "WAITING_HUMAN"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}'
+++ python3 -c 'import json,sys; print(json.load(sys.stdin)['\''data'\'']['\''content_hash'\''])'
++ CH=d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580
++ echo '### 4. H-003: approval against a stale target hash is refused'
+### 4. H-003: approval against a stale target hash is refused
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json approve-contract --decision-id dec_8f38a13b3b6147e9 --expected-hash deadbeef
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+hibiki: target_hash_conflict: target hash mismatch
+{
+  "ok": false,
+  "data": {},
+  "error_code": "target_hash_conflict",
+  "error_message": "target hash mismatch",
+  "replayed": false
+}
++ echo EXIT=1
+EXIT=1
++ echo '### 5. H-002: USER_AGENT self-reporting as approver is refused'
+### 5. H-002: USER_AGENT self-reporting as approver is refused
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json --principal ua_1 --actor ua_1 --actor-type USER_AGENT approve-contract --decision-id dec_8f38a13b3b6147e9 --expected-hash d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+hibiki: authorization_denied: operation 'approve_contract' requires Human actor; got USER_AGENT
+{
+  "ok": false,
+  "data": {},
+  "error_code": "authorization_denied",
+  "error_message": "operation 'approve_contract' requires Human actor; got USER_AGENT",
+  "replayed": false
+}
++ echo EXIT=1
+EXIT=1
++ echo '### 6. HUMAN approval against the frozen content hash'
+### 6. HUMAN approval against the frozen content hash
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json approve-contract --decision-id dec_8f38a13b3b6147e9 --expected-hash d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+{
+  "ok": true,
+  "data": {
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "status": "APPROVED",
+    "choice": "APPROVE",
+    "task_id": "task_e78965eb78264c02",
+    "task_state": "EXECUTING"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
++ echo EXIT=0
+EXIT=0
++ echo '### 7. H-004: duplicate approval replays, no second formal decision'
+### 7. H-004: duplicate approval replays, no second formal decision
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json approve-contract --decision-id dec_8f38a13b3b6147e9 --expected-hash d6dca634aa7430349e5d66e8dda19f258663464ae885dcd209ecb14f5721f580
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+{
+  "ok": true,
+  "data": {
+    "decision_id": "dec_8f38a13b3b6147e9",
+    "status": "APPROVED",
+    "choice": "APPROVE",
+    "task_id": "task_e78965eb78264c02",
+    "replayed": true
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": true
+}
++ echo EXIT=0
+EXIT=0
++ echo '### 8. activate-minimal-plan + dispatch'
+### 8. activate-minimal-plan + dispatch
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json activate-minimal-plan --task-id task_e78965eb78264c02
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "plan_version": 1,
+    "nodes": [
+      "wu_ded9571b4d674c03"
+    ],
+    "state": "EXECUTING"
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json dispatch --task-id task_e78965eb78264c02
+{
+  "ok": true,
+  "data": {
+    "task_id": "task_e78965eb78264c02",
+    "created_runs": [
+      "run_fc9ecf97b1054c7a"
+    ]
+  },
+  "error_code": null,
+  "error_message": null,
+  "replayed": false
+}
++ echo '### 9. list-runs (agent started by the Fake adapter)'
+### 9. list-runs (agent started by the Fake adapter)
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json list-runs --task-id task_e78965eb78264c02
+[
+  {
+    "run_id": "run_fc9ecf97b1054c7a",
+    "status": "RUNNING",
+    "assignment_kind": "EXECUTE",
+    "work_unit_id": "wu_ded9571b4d674c03",
+    "profile_version": 1,
+    "fencing_epoch": 1,
+    "late_arrival": false,
+    "result_json": null
+  }
+]
++ echo '### 10. H-017: HUMAN cannot submit a worker result (Internal-only)'
+### 10. H-017: HUMAN cannot submit a worker result (Internal-only)
+++ uv run --no-sync python -c '
+import sqlite3; c=sqlite3.connect('\''/tmp/m0-fix/db/cli/hibiki.db'\''); print(c.execute('\''select run_id from agent_runs'\'').fetchone()[0])'
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json submit-result --run-id run_fc9ecf97b1054c7a --outcome COMPLETED --verdict PASS
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+hibiki: authorization_denied: operation 'submit_result' requires Internal actor; got HUMAN
+{
+  "ok": false,
+  "data": {},
+  "error_code": "authorization_denied",
+  "error_message": "operation 'submit_result' requires Internal actor; got HUMAN",
+  "replayed": false
+}
++ echo EXIT=1
+EXIT=1
++ echo '### 11. task state after the refused submission'
+### 11. task state after the refused submission
++ uv run --no-sync hibiki --data-dir /tmp/m0-fix/db/cli --json get-task --task-id task_e78965eb78264c02
+{
+  "task_id": "task_e78965eb78264c02",
+  "state": "EXECUTING",
+  "state_reason": null,
+  "contract_version": 1,
+  "plan_version": 1,
+  "state_revision": 2,
+  "revoke_epoch": 0,
+  "model_calls_used": 0,
+  "model_call_limit": 200
+}

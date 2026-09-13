@@ -1,0 +1,772 @@
+All checks passed!
+unformatted: File would be reformatted
+    --> src/hibiki/application/service.py:195:53
+     |
+194  |                     notes.append(
+     -                         self._fence_uncertain_start(
+     -                             session, row, reason="outbox_inflight_timeout"
+     -                         )
+195  +                         self._fence_uncertain_start(session, row, reason="outbox_inflight_timeout")
+196  |                     )
+--------------------------------------------------------------------------------
+209  |                         AgentRunRow.task_id == task.task_id,
+     -                         AgentRunRow.status.in_(
+     -                             [AgentRunStatus.CREATED, AgentRunStatus.RUNNING]
+     -                         ),
+210  +                         AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING]),
+211  |                     )
+--------------------------------------------------------------------------------
+311  |         result = handler(session, auth, payload)
+     -         store_task_id = "" if operation == "create_task" else (
+     -             task_id if task_id else str(result.data.get("task_id") or "")
+312  +         store_task_id = (
+313  +             ""
+314  +             if operation == "create_task"
+315  +             else (task_id if task_id else str(result.data.get("task_id") or ""))
+316  |         )
+--------------------------------------------------------------------------------
+334  |
+     -     def _command_task_id(
+     -         self, session: Session, operation: str, payload: dict[str, Any]
+     -     ) -> str:
+335  +     def _command_task_id(self, session: Session, operation: str, payload: dict[str, Any]) -> str:
+336  |         """Use one authoritative namespace for lookup and storage."""
+--------------------------------------------------------------------------------
+391  |     @staticmethod
+     -     def _deserialize_command_result(
+     -         stored: dict[str, Any], *, replayed: bool
+     -     ) -> CommandResult:
+392  +     def _deserialize_command_result(stored: dict[str, Any], *, replayed: bool) -> CommandResult:
+393  |         # Backward-compatible: older rows stored only success data, or failure envelope
+--------------------------------------------------------------------------------
+401  |             )
+     -         if stored.get("ok") is False or (
+     -             "error_code" in stored and "data" not in stored
+     -         ):
+402  +         if stored.get("ok") is False or ("error_code" in stored and "data" not in stored):
+403  |             return CommandResult.failure(
+404  |                 stored.get("error_code") or "unknown",
+405  |                 stored.get("error_message") or "replayed failure",
+     -                 data={k: v for k, v in stored.items() if k not in {"ok", "error_code", "error_message"}},
+406  +                 data={
+407  +                     k: v
+408  +                     for k, v in stored.items()
+409  +                     if k not in {"ok", "error_code", "error_message"}
+410  +                 },
+411  |             )
+--------------------------------------------------------------------------------
+470  |         )
+471  +
+472  |     def _check_idempotency(
+--------------------------------------------------------------------------------
+673  |             if task is not None:
+     -                 self._enqueue_stops_for_runs(
+     -                     session, task, [run.run_id], reason=reason
+     -                 )
+674  +                 self._enqueue_stops_for_runs(session, task, [run.run_id], reason=reason)
+675  |         return f"outbox_fence_start:{row.outbox_id}"
+--------------------------------------------------------------------------------
+692  |
+     -     def _recover_work_unit_after_lost_run(
+     -         self, session: Session, run: AgentRunRow
+     -     ) -> None:
+693  +     def _recover_work_unit_after_lost_run(self, session: Session, run: AgentRunRow) -> None:
+694  |         """After LOST confirmation, restore a runnable or explicitly blocked Work Unit."""
+--------------------------------------------------------------------------------
+721  |         """True if any adapter instance or workspace owner still indicates a live writer."""
+     -         for run in session.scalars(
+     -             select(AgentRunRow).where(AgentRunRow.task_id == task_id)
+     -         ):
+722  +         for run in session.scalars(select(AgentRunRow).where(AgentRunRow.task_id == task_id)):
+723  |             if run.status in {AgentRunStatus.CREATED, AgentRunStatus.RUNNING}:
+--------------------------------------------------------------------------------
+750  |         contract = self._active_contract(session, task.task_id)
+     -         expired = bool(
+     -             effect.expires_at and as_utc_naive(effect.expires_at) < self.clock.now()
+     -         )
+751  +         expired = bool(effect.expires_at and as_utc_naive(effect.expires_at) < self.clock.now())
+752  |         guard_side_effect_send(
+--------------------------------------------------------------------------------
+771  |                 GateRow.task_id == task_id,
+     -                 GateRow.lifecycle.in_(
+     -                     [GateLifecycle.OPEN, GateLifecycle.APPROVED_PENDING_APPLY]
+     -                 ),
+772  +                 GateRow.lifecycle.in_([GateLifecycle.OPEN, GateLifecycle.APPROVED_PENDING_APPLY]),
+773  |             )
+--------------------------------------------------------------------------------
+778  |
+     -     def _count_active_runs(
+     -         self, session: Session, *, task_id: str | None = None
+     -     ) -> int:
+     -         q = select(func.count()).select_from(AgentRunRow).where(
+     -             AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING])
+779  +     def _count_active_runs(self, session: Session, *, task_id: str | None = None) -> int:
+780  +         q = (
+781  +             select(func.count())
+782  +             .select_from(AgentRunRow)
+783  +             .where(AgentRunRow.status.in_([AgentRunStatus.CREATED, AgentRunStatus.RUNNING]))
+784  |         )
+--------------------------------------------------------------------------------
+809  |                 GateRow.task_id == task_id,
+     -                 GateRow.lifecycle.in_(
+     -                     [GateLifecycle.OPEN, GateLifecycle.APPROVED_PENDING_APPLY]
+     -                 ),
+810  +                 GateRow.lifecycle.in_([GateLifecycle.OPEN, GateLifecycle.APPROVED_PENDING_APPLY]),
+811  |             )
+--------------------------------------------------------------------------------
+1040 |         if task.principal_id != auth.principal_id:
+     -             raise AuthorizationError(
+     -                 "decision principal mismatch", code="authorization_denied"
+     -             )
+1041 +             raise AuthorizationError("decision principal mismatch", code="authorization_denied")
+1042 |
+--------------------------------------------------------------------------------
+1178 |             if snap.contract_version != task.contract_version:
+     -                 raise ConflictError(
+     -                     "acceptance snapshot contract stale", code="snapshot_stale"
+     -                 )
+1179 +                 raise ConflictError("acceptance snapshot contract stale", code="snapshot_stale")
+1180 |             if snap.plan_version != task.plan_version:
+     -                 raise ConflictError(
+     -                     "acceptance snapshot plan stale", code="snapshot_stale"
+     -                 )
+1181 +                 raise ConflictError("acceptance snapshot plan stale", code="snapshot_stale")
+1182 |             # Current-plan work units must be DONE; historical removed nodes are CANCELLED
+--------------------------------------------------------------------------------
+1206 |             blockers = [
+     -                 wu
+     -                 for wu in pending_wu
+     -                 if not current_ids or wu.work_unit_id in current_ids
+1207 +                 wu for wu in pending_wu if not current_ids or wu.work_unit_id in current_ids
+1208 |             ]
+--------------------------------------------------------------------------------
+1230 |             required = [
+     -                 c
+     -                 for c in (content.get("acceptance_criteria") or [])
+     -                 if c.get("required", True)
+1231 +                 c for c in (content.get("acceptance_criteria") or []) if c.get("required", True)
+1232 |             ]
+     -             self._assert_acceptance_evidence(
+     -                 required, snap_content.get("evidence") or []
+     -             )
+1233 +             self._assert_acceptance_evidence(required, snap_content.get("evidence") or [])
+1234 |             # no active runs
+--------------------------------------------------------------------------------
+1269 |                 )
+     -             effect.state = transition_side_effect(
+     -                 SideEffectState(effect.state), "approve"
+     -             )
+1270 +             effect.state = transition_side_effect(SideEffectState(effect.state), "approve")
+1271 |             effect.authorization_ref = decision.decision_id
+     -             effect.expires_at = now + timedelta(
+     -                 minutes=DEFAULTS.side_effect_approval_ttl_minutes
+     -             )
+1272 +             effect.expires_at = now + timedelta(minutes=DEFAULTS.side_effect_approval_ttl_minutes)
+1273 |             for gate in session.scalars(
+--------------------------------------------------------------------------------
+1450 |             elif existing.task_id != task.task_id:
+     -                 raise PreconditionError(
+     -                     "work unit spec task mismatch", code="cross_task_work_unit"
+     -                 )
+1451 +                 raise PreconditionError("work unit spec task mismatch", code="cross_task_work_unit")
+1452 |
+--------------------------------------------------------------------------------
+1545 |                                 run.terminal_reason = "removed_from_plan"
+     -                                 self._clear_run_occupancy(
+     -                                     session, run, release_workspace=True
+     -                                 )
+1546 +                                 self._clear_run_occupancy(session, run, release_workspace=True)
+1547 |             orphan.status = WorkUnitStatus.CANCELLED
+--------------------------------------------------------------------------------
+1752 |
+     -     def _deps_satisfied(
+     -         self, session: Session, wu_id: str, edges: list[dict[str, Any]]
+     -     ) -> bool:
+1753 +     def _deps_satisfied(self, session: Session, wu_id: str, edges: list[dict[str, Any]]) -> bool:
+1754 |         incoming = [e for e in edges if e["to_work_unit_id"] == wu_id]
+--------------------------------------------------------------------------------
+1784 |         if auth.principal_id != task.principal_id:
+     -             raise AuthorizationError(
+     -                 "run principal mismatch", code="authorization_denied"
+     -             )
+1785 +             raise AuthorizationError("run principal mismatch", code="authorization_denied")
+1786 |         if require_fencing:
+1787 |             if "fencing_epoch" not in payload:
+     -                 raise ConflictError(
+     -                     "fencing_epoch required", code="fencing_required"
+     -                 )
+1788 +                 raise ConflictError("fencing_epoch required", code="fencing_required")
+1789 |             if int(payload["fencing_epoch"]) != int(run.fencing_epoch):
+     -                 raise ConflictError(
+     -                     "fencing epoch mismatch", code="fencing_conflict"
+     -                 )
+1790 +                 raise ConflictError("fencing epoch mismatch", code="fencing_conflict")
+1791 |         payload_task_id = payload.get("task_id")
+1792 |         if payload_task_id is not None and str(payload_task_id) != run.task_id:
+     -             raise AuthorizationError(
+     -                 "run task mismatch", code="authorization_denied"
+     -             )
+1793 +             raise AuthorizationError("run task mismatch", code="authorization_denied")
+1794 |         payload_run_id = payload.get("run_id")
+1795 |         if payload_run_id is not None and str(payload_run_id) != run.run_id:
+     -             raise AuthorizationError(
+     -                 "run id mismatch", code="authorization_denied"
+     -             )
+1796 +             raise AuthorizationError("run id mismatch", code="authorization_denied")
+1797 |         if (
+--------------------------------------------------------------------------------
+1859 |                 assignment_current = False
+     -             elif run.work_unit_spec_version is not None and int(
+     -                 run.work_unit_spec_version
+     -             ) != int(wu.spec_version):
+1860 +             elif run.work_unit_spec_version is not None and int(run.work_unit_spec_version) != int(
+1861 +                 wu.spec_version
+1862 +             ):
+1863 |                 assignment_current = False
+--------------------------------------------------------------------------------
+1945 |                 if refs:
+     -                     wu.verified_artifact_hash = refs[0] if isinstance(refs[0], str) else refs[0].get(
+     -                         "hash"
+1946 +                     wu.verified_artifact_hash = (
+1947 +                         refs[0] if isinstance(refs[0], str) else refs[0].get("hash")
+1948 |                     )
+--------------------------------------------------------------------------------
+2196 |                 WorkUnitExecutionRow.task_id == task.task_id,
+     -                 WorkUnitExecutionRow.status.in_(
+     -                     [WorkUnitStatus.PENDING, WorkUnitStatus.BLOCKED]
+     -                 ),
+2197 +                 WorkUnitExecutionRow.status.in_([WorkUnitStatus.PENDING, WorkUnitStatus.BLOCKED]),
+2198 |             )
+--------------------------------------------------------------------------------
+2219 |                 SideEffectRow.task_id == task.task_id,
+     -                 SideEffectRow.state.in_(
+     -                     [SideEffectState.UNKNOWN, SideEffectState.DISPATCHING]
+     -                 ),
+2220 +                 SideEffectRow.state.in_([SideEffectState.UNKNOWN, SideEffectState.DISPATCHING]),
+2221 |             )
+2222 |         ).all()
+2223 |         if unknowns and not accept_unknown:
+     -             raise PreconditionError(
+     -                 "unresolved external effects", code="unresolved_external"
+     -             )
+2224 +             raise PreconditionError("unresolved external effects", code="unresolved_external")
+2225 |         self._assert_no_live_writers(session, task.task_id)
+--------------------------------------------------------------------------------
+2233 |             run.finished_at = self.clock.now()
+     -         self._set_task_state(
+     -             session, task, "cancellation.settled")
+2234 +         self._set_task_state(session, task, "cancellation.settled")
+2235 |         self._append_event(
+--------------------------------------------------------------------------------
+2256 |             # IN_FLIGHT side effects may already be sent — leave for reconcile as UNKNOWN
+     -             if (
+     -                 ob.status == OutboxStatus.IN_FLIGHT
+     -                 and ob.command_type == "side_effect.dispatch"
+     -             ):
+2257 +             if ob.status == OutboxStatus.IN_FLIGHT and ob.command_type == "side_effect.dispatch":
+2258 |                 payload = json.loads(ob.payload_json)
+--------------------------------------------------------------------------------
+2270 |                 # IN_FLIGHT or adapter-alive PENDING: start may already have happened
+     -                 if ob.status == OutboxStatus.IN_FLIGHT or self._adapter_may_be_alive(
+     -                     run_id
+     -                 ):
+2271 +                 if ob.status == OutboxStatus.IN_FLIGHT or self._adapter_may_be_alive(run_id):
+2272 |                     ob.status = OutboxStatus.DEAD
+--------------------------------------------------------------------------------
+2317 |         selected: dict[str, AgentRunRow] = {}
+     -         for run in session.scalars(
+     -             select(AgentRunRow).where(AgentRunRow.task_id == task_id)
+     -         ):
+2318 +         for run in session.scalars(select(AgentRunRow).where(AgentRunRow.task_id == task_id)):
+2319 |             if run.status in {AgentRunStatus.CREATED, AgentRunStatus.RUNNING}:
+--------------------------------------------------------------------------------
+2367 |         runs = self._runs_requiring_stop(session, task.task_id)
+     -         self._enqueue_stops_for_runs(
+     -             session, task, [r.run_id for r in runs], reason=reason
+     -         )
+2368 +         self._enqueue_stops_for_runs(session, task, [r.run_id for r in runs], reason=reason)
+2369 |
+--------------------------------------------------------------------------------
+2407 |     ) -> ArtifactRow:
+     -         row = session.get(
+     -             ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash}
+     -         )
+2408 +         row = session.get(ArtifactRow, {"task_id": task_id, "artifact_hash": artifact_hash})
+2409 |         if row is None:
+--------------------------------------------------------------------------------
+2415 |
+     -     def _current_delivery_hashes(
+     -         self, session: Session, nodes: list[dict[str, Any]]
+     -     ) -> set[str]:
+2416 +     def _current_delivery_hashes(self, session: Session, nodes: list[dict[str, Any]]) -> set[str]:
+2417 |         """Hashes currently delivered by DONE work units on the active plan."""
+--------------------------------------------------------------------------------
+2422 |                 continue
+     -             run = session.scalars(select(AgentRunRow).where(
+     -                 AgentRunRow.work_unit_id == wu.work_unit_id,
+     -                 AgentRunRow.result_ref == wu.selected_result_ref,
+     -             )).one_or_none()
+2423 +             run = session.scalars(
+2424 +                 select(AgentRunRow).where(
+2425 +                     AgentRunRow.work_unit_id == wu.work_unit_id,
+2426 +                     AgentRunRow.result_ref == wu.selected_result_ref,
+2427 +                 )
+2428 +             ).one_or_none()
+2429 |             if run is None:
+2430 |                 continue
+2431 |             result = json.loads(run.result_json or "{}")
+     -             for ref in list(result.get("artifact_refs") or []) + list(result.get("verified_artifact_refs") or []):
+2432 +             for ref in list(result.get("artifact_refs") or []) + list(
+2433 +                 result.get("verified_artifact_refs") or []
+2434 +             ):
+2435 |                 value = ref if isinstance(ref, str) else ref.get("hash")
+--------------------------------------------------------------------------------
+2550 |
+     -         return [default_by_cid[str(c["criterion_id"])] for c in required if str(c["criterion_id"]) in default_by_cid]
+2551 +         return [
+2552 +             default_by_cid[str(c["criterion_id"])]
+2553 +             for c in required
+2554 +             if str(c["criterion_id"]) in default_by_cid
+2555 +         ]
+2556 |
+--------------------------------------------------------------------------------
+2614 |         required = [
+     -             c
+     -             for c in (content.get("acceptance_criteria") or [])
+     -             if c.get("required", True)
+2615 +             c for c in (content.get("acceptance_criteria") or []) if c.get("required", True)
+2616 |         ]
+--------------------------------------------------------------------------------
+2767 |             state=state,
+     -             supports_idempotent_query=bool(
+     -                 payload.get("supports_idempotent_query", True)
+     -             ),
+2768 +             supports_idempotent_query=bool(payload.get("supports_idempotent_query", True)),
+2769 |             created_at=now,
+--------------------------------------------------------------------------------
+2786 |                     created_at=now,
+     -                     expires_at=now
+     -                     + timedelta(minutes=DEFAULTS.side_effect_approval_ttl_minutes),
+2787 +                     expires_at=now + timedelta(minutes=DEFAULTS.side_effect_approval_ttl_minutes),
+2788 |                     gate_lifecycle=GateLifecycle.OPEN,
+--------------------------------------------------------------------------------
+2893 |         if effect.state not in {SideEffectState.DISPATCHING, SideEffectState.UNKNOWN}:
+     -             return CommandResult.success(
+     -                 {"effect_id": effect.effect_id, "state": effect.state}
+     -             )
+2894 +             return CommandResult.success({"effect_id": effect.effect_id, "state": effect.state})
+2895 |         if not effect.supports_idempotent_query:
+--------------------------------------------------------------------------------
+2913 |             )
+     -         q = self.external_adapter.query(
+     -             effect.effect_id, effect.external_idempotency_key
+     -         )
+2914 +         q = self.external_adapter.query(effect.effect_id, effect.external_idempotency_key)
+2915 |         if q and q.get("status") == "succeeded":
+--------------------------------------------------------------------------------
+2923 |             effect.state = SideEffectState.FAILED_CONFIRMED
+     -             return CommandResult.success(
+     -                 {"effect_id": effect.effect_id, "state": effect.state}
+     -             )
+2924 +             return CommandResult.success({"effect_id": effect.effect_id, "state": effect.state})
+2925 |         effect.state = SideEffectState.UNKNOWN
+--------------------------------------------------------------------------------
+2973 |                     run.status = AgentRunStatus.SUCCEEDED
+     -                     run.result_json = canonical_json(
+     -                         {"outcome": "BLOCKED", "blockers": [reason]}
+     -                     )
+2974 +                     run.result_json = canonical_json({"outcome": "BLOCKED", "blockers": [reason]})
+2975 |                     run.finished_at = now
+2976 |                 # Keep Workspace until exit confirm; enqueue stop for live writer
+     -                 self._enqueue_stops_for_runs(
+     -                     session, task, [run.run_id], reason="blocking_gate"
+     -                 )
+2977 +                 self._enqueue_stops_for_runs(session, task, [run.run_id], reason="blocking_gate")
+2978 |         self._set_task_state(
+--------------------------------------------------------------------------------
+3044 |         # Revoke queued starts too; a claimed start remains occupied until stop ACK.
+     -         for row in session.scalars(select(OutboxRow).where(
+     -             OutboxRow.task_id == task.task_id,
+     -             OutboxRow.command_type == "agent.start",
+     -             OutboxRow.status.in_([OutboxStatus.PENDING, OutboxStatus.IN_FLIGHT]),
+     -         )):
+3045 +         for row in session.scalars(
+3046 +             select(OutboxRow).where(
+3047 +                 OutboxRow.task_id == task.task_id,
+3048 +                 OutboxRow.command_type == "agent.start",
+3049 +                 OutboxRow.status.in_([OutboxStatus.PENDING, OutboxStatus.IN_FLIGHT]),
+3050 +             )
+3051 +         ):
+3052 |             if json.loads(row.payload_json).get("run_id") == run.run_id:
+--------------------------------------------------------------------------------
+3056 |         self._append_event(
+     -             session, run.task_id, "run.exit_confirmation_requested",
+     -             auth_actor=auth.actor_id, payload={"run_id": run.run_id},
+3057 +             session,
+3058 +             run.task_id,
+3059 +             "run.exit_confirmation_requested",
+3060 +             auth_actor=auth.actor_id,
+3061 +             payload={"run_id": run.run_id},
+3062 |         )
+     -         return CommandResult.success({
+     -             "task_id": run.task_id, "run_id": run.run_id,
+     -             "stop_requested": True, "workspace_released": False,
+     -         })
+3063 +         return CommandResult.success(
+3064 +             {
+3065 +                 "task_id": run.task_id,
+3066 +                 "run_id": run.run_id,
+3067 +                 "stop_requested": True,
+3068 +                 "workspace_released": False,
+3069 +             }
+3070 +         )
+3071 |
+--------------------------------------------------------------------------------
+3079 |         if not run_id:
+     -             raise PreconditionError(
+     -                 "workspace has no owner run", code="workspace_unbound"
+     -             )
+3080 +             raise PreconditionError("workspace has no owner run", code="workspace_unbound")
+3081 |         run = session.get(AgentRunRow, run_id)
+3082 |         if run is None:
+3083 |             raise NotFoundError("run not found", code="run_not_found")
+3084 |         if ws.owner_run_id and ws.owner_run_id != run.run_id:
+     -             raise AuthorizationError(
+     -                 "workspace owner mismatch", code="authorization_denied"
+     -             )
+3085 +             raise AuthorizationError("workspace owner mismatch", code="authorization_denied")
+3086 |         bind_payload = dict(payload)
+--------------------------------------------------------------------------------
+3109 |         run.lease_expires_at = now + timedelta(seconds=DEFAULTS.lease_seconds)
+     -         return CommandResult.success({"run_id": run.run_id, "lease_expires_at": run.lease_expires_at.isoformat()})
+3110 +         return CommandResult.success(
+3111 +             {"run_id": run.run_id, "lease_expires_at": run.lease_expires_at.isoformat()}
+3112 +         )
+3113 |
+--------------------------------------------------------------------------------
+3203 |             baseline_hash = active.content_hash
+     -             merged = self._merge_contract_content(
+     -                 json.loads(active.content_json), delta
+     -             )
+3204 +             merged = self._merge_contract_content(json.loads(active.content_json), delta)
+3205 |             approved_target_hash = content_hash(merged)
+--------------------------------------------------------------------------------
+3332 |         if decision.status != DecisionStatus.APPROVED:
+     -             raise PreconditionError(
+     -                 "delta decision not approved", code="decision_not_approved"
+     -             )
+3333 +             raise PreconditionError("delta decision not approved", code="decision_not_approved")
+3334 |         task = self._get_task(session, decision.task_id)
+3335 |         if task.principal_id != auth.principal_id:
+     -             raise AuthorizationError(
+     -                 "decision principal mismatch", code="authorization_denied"
+     -             )
+3336 +             raise AuthorizationError("decision principal mismatch", code="authorization_denied")
+3337 |         gates = list(
+     -             session.scalars(
+     -                 select(GateRow).where(GateRow.decision_id == decision.decision_id)
+     -             )
+3338 +             session.scalars(select(GateRow).where(GateRow.decision_id == decision.decision_id))
+3339 |         )
+3340 |         if not any(g.lifecycle == GateLifecycle.APPROVED_PENDING_APPLY for g in gates):
+     -             raise PreconditionError(
+     -                 "delta gate not awaiting apply", code="delta_not_pending_apply"
+     -             )
+3341 +             raise PreconditionError("delta gate not awaiting apply", code="delta_not_pending_apply")
+3342 |         self._assert_no_live_writers(session, task.task_id)
+3343 |         if not decision.payload_json:
+     -             raise PreconditionError(
+     -                 "contract delta payload missing", code="delta_payload_missing"
+     -             )
+3344 +             raise PreconditionError("contract delta payload missing", code="delta_payload_missing")
+3345 |         delta, baseline_v, baseline_h = self._parse_contract_delta_payload(decision)
+--------------------------------------------------------------------------------
+3421 |             if baseline_h is not None:
+     -                 raise ConflictError(
+     -                     "merged contract hash mismatch", code="target_hash_conflict"
+     -                 )
+3422 +                 raise ConflictError("merged contract hash mismatch", code="target_hash_conflict")
+3423 |         # Supersede previous active
+--------------------------------------------------------------------------------
+3538 |                         effect.state = SideEffectState.AUTHORIZED
+     -                 elif (
+     -                     effect.state == SideEffectState.AUTHORIZED
+     -                     and (task.cancel_intent or TaskState(task.state) == TaskState.CANCELLING)
+3539 +                 elif effect.state == SideEffectState.AUTHORIZED and (
+3540 +                     task.cancel_intent or TaskState(task.state) == TaskState.CANCELLING
+3541 |                 ):
+--------------------------------------------------------------------------------
+3570 |         if (
+     -             run is None or task is None
+3571 +             run is None
+3572 +             or task is None
+3573 |             or run.status not in {AgentRunStatus.CREATED, AgentRunStatus.RUNNING}
+3574 |             or row.revoke_epoch != task.revoke_epoch
+     -             or task.cancel_intent or task.pause_intent
+3575 +             or task.cancel_intent
+3576 +             or task.pause_intent
+3577 |             or self._has_blocking_gate(session, task.task_id)
+--------------------------------------------------------------------------------
+3595 |                 self.executor.run(
+     -                     lambda s: self._ack_outbox_and_mark_running(
+     -                         s, item["outbox_id"], payload
+     -                     )
+3596 +                     lambda s: self._ack_outbox_and_mark_running(s, item["outbox_id"], payload)
+3597 |                 )
+3598 |             elif ctype == "agent.stop":
+3599 |                 result = self.agent_adapter.stop(payload["run_id"], payload.get("reason") or "stop")
+     -                 self.executor.run(
+     -                     lambda s: self._ack_stop(s, item["outbox_id"], payload, result)
+     -                 )
+3600 +                 self.executor.run(lambda s: self._ack_stop(s, item["outbox_id"], payload, result))
+3601 |             elif ctype == "side_effect.dispatch":
+--------------------------------------------------------------------------------
+3683 |                 self._keep_start_occupancy(session, run)
+     -                 self._enqueue_stops_for_runs(
+     -                     session, task, [run.run_id], reason="start_ack_fenced"
+     -                 )
+3684 +                 self._enqueue_stops_for_runs(session, task, [run.run_id], reason="start_ack_fenced")
+3685 |             return
+--------------------------------------------------------------------------------
+3742 |             self._append_event(
+     -                 session, run.task_id, "run.exit_confirmed", auth_actor=None,
+3743 +                 session,
+3744 +                 run.task_id,
+3745 +                 "run.exit_confirmed",
+3746 +                 auth_actor=None,
+3747 |                 payload={"run_id": run.run_id, "start_revoked": True},
+--------------------------------------------------------------------------------
+3861 |         def _read(session: Session) -> list[dict[str, Any]]:
+     -             rows = session.scalars(
+     -                 select(AgentRunRow).where(AgentRunRow.task_id == task_id)
+     -             ).all()
+3862 +             rows = session.scalars(select(AgentRunRow).where(AgentRunRow.task_id == task_id)).all()
+3863 |             return [
+--------------------------------------------------------------------------------
+3881 |             rows = session.scalars(
+     -                 select(EventRow)
+     -                 .where(EventRow.task_id == task_id)
+     -                 .order_by(EventRow.sequence_no)
+3882 +                 select(EventRow).where(EventRow.task_id == task_id).order_by(EventRow.sequence_no)
+3883 |             ).all()
+     |
+
+unformatted: File would be reformatted
+   --> src/hibiki/domain/guards.py:161:8
+    |
+160 |         )
+    -     if (
+    -         effect_contract_version is not None
+    -         and effect_contract_version != active_contract_version
+    -     ):
+161 +     if effect_contract_version is not None and effect_contract_version != active_contract_version:
+162 |         raise PreconditionError(
+    |
+
+unformatted: File would be reformatted
+  --> src/hibiki/domain/transitions.py:54:34
+   |
+53 |
+   - TERMINAL_TASK_STATES = frozenset(
+   -     {TaskState.COMPLETED, TaskState.FAILED, TaskState.ABORTED}
+   - )
+54 + TERMINAL_TASK_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.ABORTED})
+55 |
+   - DISPATCHABLE_TASK_STATES = frozenset(
+   -     {TaskState.PLANNING, TaskState.EXECUTING, TaskState.VERIFYING}
+   - )
+56 + DISPATCHABLE_TASK_STATES = frozenset({TaskState.PLANNING, TaskState.EXECUTING, TaskState.VERIFYING})
+57 |
+   |
+
+unformatted: File would be reformatted
+  --> src/hibiki/domain/types.py:53:17
+   |
+52 |     @classmethod
+   -     def success(cls, data: dict[str, Any] | None = None, *, replayed: bool = False) -> CommandResult:
+53 +     def success(
+54 +         cls, data: dict[str, Any] | None = None, *, replayed: bool = False
+55 +     ) -> CommandResult:
+56 |         return cls(ok=True, data=data or {}, replayed=replayed)
+   |
+
+unformatted: File would be reformatted
+   --> src/hibiki/persistence/models.py:168:23
+    |
+167 |
+    -     __table_args__ = (
+    -         UniqueConstraint("task_id", "plan_version", name="uq_plans_task_version"),
+    -     )
+168 +     __table_args__ = (UniqueConstraint("task_id", "plan_version", name="uq_plans_task_version"),)
+169 |
+--------------------------------------------------------------------------------
+245 |     grant_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    -     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    -     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+246 +     lease_expires_at: Mapped[datetime | None] = mapped_column(
+247 +         DateTime(timezone=True), nullable=True
+248 +     )
+249 +     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+250 +         DateTime(timezone=True), nullable=True
+251 +     )
+252 |     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+--------------------------------------------------------------------------------
+348 |
+    -     __table_args__ = (
+    -         UniqueConstraint("task_id", "sequence_no", name="uq_events_task_seq"),
+    -     )
+349 +     __table_args__ = (UniqueConstraint("task_id", "sequence_no", name="uq_events_task_seq"),)
+350 |
+    |
+
+unformatted: File would be reformatted
+  --> src/hibiki/persistence/session.py:94:32
+   |
+93 |             self._fh = None
+   -             raise RuntimeError(
+   -                 f"another Core instance holds the lock on {self._path}"
+   -             ) from exc
+94 +             raise RuntimeError(f"another Core instance holds the lock on {self._path}") from exc
+95 |         self._fh.seek(0)
+   |
+
+unformatted: File would be reformatted
+  --> src/hibiki/runtime/fake_agent.py:38:31
+   |
+37 |
+   -     def _revoked_start_result(
+   -         self, run_id: str, run_spec: dict[str, Any]
+   -     ) -> dict[str, Any]:
+38 +     def _revoked_start_result(self, run_id: str, run_spec: dict[str, Any]) -> dict[str, Any]:
+39 |         """Forbid start without erasing an existing stubborn writer record."""
+   |
+
+unformatted: File would be reformatted
+   --> tests/application/test_m0_acceptance.py:264:34
+    |
+263 |     assert runs
+    -     assert runs[0]["status"] in {AgentRunStatus.RUNNING, AgentRunStatus.CREATED, AgentRunStatus.SUCCEEDED}
+264 +     assert runs[0]["status"] in {
+265 +         AgentRunStatus.RUNNING,
+266 +         AgentRunStatus.CREATED,
+267 +         AgentRunStatus.SUCCEEDED,
+268 +     }
+269 |
+--------------------------------------------------------------------------------
+348 |         {"profile_id": "fake", "profile_version": 2, "content": {"v": 2}},
+    -     )
+    -     svc.execute(
+    -         "dispatch_ready_runs", auth, {"task_id": task_id, "profile_version": 1}
+349 |     )
+350 +     svc.execute("dispatch_ready_runs", auth, {"task_id": task_id, "profile_version": 1})
+351 |     run = svc.list_runs(task_id)[0]
+--------------------------------------------------------------------------------
+416 |     task_id, _ = approve_flow(svc, auth)
+    -     gen = svc.execute("replace_planner_generation", auth, {"task_id": task_id}).data[
+    -         "generation"
+    -     ]
+417 +     gen = svc.execute("replace_planner_generation", auth, {"task_id": task_id}).data["generation"]
+418 |     r = svc.execute(
+--------------------------------------------------------------------------------
+611 |     assert ws["state"] == WorkspaceState.QUARANTINED
+612 +
+613 |     # cannot dispatch second writer
+--------------------------------------------------------------------------------
+738 |     eff = svc.get_side_effect(effect_id)
+    -     assert eff["state"] in {SideEffectState.UNKNOWN, SideEffectState.DISPATCHING, SideEffectState.SUCCEEDED}
+739 +     assert eff["state"] in {
+740 +         SideEffectState.UNKNOWN,
+741 +         SideEffectState.DISPATCHING,
+742 +         SideEffectState.SUCCEEDED,
+743 +     }
+744 |     # if unknown, no blind retry count bump via ordinary dispatch
+--------------------------------------------------------------------------------
+774 |     assert external.effect_counts[key] == 1
+775 +
+776 |     # simulate lost local receipt
+    |
+
+unformatted: File would be reformatted
+    --> tests/application/test_m0_review_regressions.py:1061:87
+     |
+1060 |     assert svc.get_task(task_id)["model_call_limit"] == 200
+     -     gen = svc.execute("replace_planner_generation", human, {"task_id": task_id}).data[
+     -         "generation"
+     -     ]
+1061 +     gen = svc.execute("replace_planner_generation", human, {"task_id": task_id}).data["generation"]
+1062 |     r = svc.execute(
+--------------------------------------------------------------------------------
+1087 |     # Explicit apply after writers drained
+     -     applied = svc.execute(
+     -         "apply_contract_delta", human, {"decision_id": decision_id}
+     -     )
+1088 +     applied = svc.execute("apply_contract_delta", human, {"decision_id": decision_id})
+1089 |     assert applied.ok, applied
+--------------------------------------------------------------------------------
+1271 |             "task_id": task_id,
+     -             "evidence": [
+     -                 {"criterion_id": "c1", "artifact_hash": "old-hash", "verdict": "PASS"}
+     -             ],
+1272 +             "evidence": [{"criterion_id": "c1", "artifact_hash": "old-hash", "verdict": "PASS"}],
+1273 |         },
+--------------------------------------------------------------------------------
+1379 |     task_id, _ = approve_flow(svc, human)
+     -     gen = svc.execute("replace_planner_generation", human, {"task_id": task_id}).data[
+     -         "generation"
+     -     ]
+1380 +     gen = svc.execute("replace_planner_generation", human, {"task_id": task_id}).data["generation"]
+1381 |     r1 = svc.execute(
+--------------------------------------------------------------------------------
+1408 |     d1, d2 = r1.data["decision_id"], r2.data["decision_id"]
+     -     assert svc.execute(
+     -         "resolve_decision", human, {"decision_id": d1, "choice": "APPROVE"}
+     -     ).ok
+     -     assert svc.execute(
+     -         "resolve_decision", human, {"decision_id": d2, "choice": "APPROVE"}
+     -     ).ok
+1409 +     assert svc.execute("resolve_decision", human, {"decision_id": d1, "choice": "APPROVE"}).ok
+1410 +     assert svc.execute("resolve_decision", human, {"decision_id": d2, "choice": "APPROVE"}).ok
+1411 |     first = svc.execute("apply_contract_delta", human, {"decision_id": d1})
+     |
+
+unformatted: File would be reformatted
+   --> tests/property/test_random_schedule.py:105:32
+    |
+104 |     def _read(session):
+    -         rows = session.scalars(
+    -             select(DecisionRow).where(DecisionRow.status == "APPROVED")
+    -         ).all()
+105 +         rows = session.scalars(select(DecisionRow).where(DecisionRow.status == "APPROVED")).all()
+106 |         return Counter(row.target_hash for row in rows)
+--------------------------------------------------------------------------------
+210 |
+    -     checkpoint_run = next(
+    -         x for x in svc.list_runs(task_id) if x["run_id"] == checkpoint_run_id
+    -     )
+211 +     checkpoint_run = next(x for x in svc.list_runs(task_id) if x["run_id"] == checkpoint_run_id)
+212 |     r = _exec(
+--------------------------------------------------------------------------------
+360 |
+    -         elif op == "activate" and approved_once and state in {
+    -             TaskState.PLANNING,
+    -             TaskState.EXECUTING,
+    -         }:
+361 +         elif (
+362 +             op == "activate"
+363 +             and approved_once
+364 +             and state
+365 +             in {
+366 +                 TaskState.PLANNING,
+367 +                 TaskState.EXECUTING,
+368 +             }
+369 +         ):
+370 |             _exec(
+--------------------------------------------------------------------------------
+572 |     assert approved_by_target[content_hash] == 1, (
+    -         f"seed {seed}: checkpoint target hash approved "
+    -         f"{approved_by_target[content_hash]} times"
+573 +         f"seed {seed}: checkpoint target hash approved {approved_by_target[content_hash]} times"
+574 |     )
+    |
+
+10 files would be reformatted, 28 files already formatted

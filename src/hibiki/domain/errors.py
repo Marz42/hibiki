@@ -35,3 +35,9 @@ class IdempotencyConflictError(DomainError):
 
 class NotFoundError(DomainError):
     code = "not_found"
+
+
+class SchemaStartupError(DomainError):
+    """Startup refused: the database schema state is unknown or inconsistent."""
+
+    code = "schema_startup_refused"

@@ -1,8 +1,10 @@
 """Property / random-schedule invariant tests with fixed seeds.
 
 Each trajectory must submit a measurable number of inputs (legal, illegal,
-duplicate, and late/terminal). Terminal task states do not stop the loop —
-post-terminal illegal and replay inputs continue until the step budget is met.
+duplicate, and late/terminal), and must actually reach the guarded paths
+(dispatch, agent start, worker result, terminal state). Terminal task states do
+not stop the loop — post-terminal illegal and replay inputs continue until the
+step budget is met.
 """
 
 from __future__ import annotations
@@ -10,7 +12,10 @@ from __future__ import annotations
 import random
 from collections import Counter
 
+from sqlalchemy import select
+
 from hibiki.domain.enums import DecisionStatus, TaskState
+from hibiki.persistence.models import DecisionRow
 from tests.helpers import human_auth, make_core, run_auth, run_fencing_epoch, user_agent_auth
 
 OPS = (
@@ -30,6 +35,79 @@ OPS = (
     "late_result",
     "terminal_illegal",
 )
+
+#: Operations that are always safe to submit (may still be refused on
+#: preconditions); used when no state-specific legal operation is available.
+GENERIC_OPS = (
+    "dispatch",
+    "submit_result",
+    "confirm_exit",
+    "late_result",
+    "duplicate_dispatch",
+    "pause",
+    "quiesce",
+    "resume",
+    "cancel",
+    "duplicate_approve",
+)
+
+#: Illegal / unsupported inputs, injected on a small slice of every trajectory.
+INVALID_OPS = ("ua_approve", "terminal_illegal")
+
+
+def _legal_ops_for(
+    state: TaskState,
+    decision_id: str | None,
+    approved_once: bool,
+    known_run_ids: list[str],
+) -> tuple[str, ...]:
+    """Operations that advance the legal M0 path from ``state``."""
+    ops: list[str] = []
+    if decision_id is None and state in {TaskState.NEW, TaskState.WAITING_HUMAN}:
+        ops.append("submit_contract")
+    if decision_id is not None and not approved_once:
+        ops.append("approve")
+    if approved_once and state in {TaskState.PLANNING, TaskState.EXECUTING}:
+        ops.append("activate")
+    if known_run_ids and state in {
+        TaskState.EXECUTING,
+        TaskState.PLANNING,
+        TaskState.VERIFYING,
+    }:
+        ops.append("dispatch")
+    if known_run_ids and state == TaskState.EXECUTING:
+        ops.extend(("submit_result", "confirm_exit"))
+    if state == TaskState.PAUSED:
+        ops.append("resume")
+    return tuple(ops)
+
+
+def _pick_op(
+    rng: random.Random,
+    state: TaskState,
+    decision_id: str | None,
+    approved_once: bool,
+    known_run_ids: list[str],
+) -> str:
+    """Choose the next input: mostly legal-path progress, sometimes an illegal one."""
+    if rng.random() < 0.12:
+        return rng.choice(INVALID_OPS)
+    legal = _legal_ops_for(state, decision_id, approved_once, known_run_ids)
+    if legal and rng.random() < 0.85:
+        return rng.choice(legal)
+    return rng.choice(GENERIC_OPS)
+
+
+def _approved_decisions_by_target(svc) -> Counter:
+    """Authoritative count of APPROVED decision rows per target hash."""
+
+    def _read(session):
+        rows = session.scalars(
+            select(DecisionRow).where(DecisionRow.status == "APPROVED")
+        ).all()
+        return Counter(row.target_hash for row in rows)
+
+    return svc.executor.run(_read)
 
 
 def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
@@ -55,11 +133,108 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
     approved_once = False
     formal_approvals = 0
     valid_dispatches = 0
+    worker_submissions = 0
     known_run_ids: list[str] = []
 
-    for step in range(steps):
-        op = rng.choice(OPS)
+    # ------------------------------------------------------------- checkpoint
+    # Every seed must drive the full legal M0 path at least once: approval ->
+    # activation -> dispatch -> agent start -> worker result -> exit confirm.
+    # A uniform random walk over OPS never satisfies the guards, so a green run
+    # without this checkpoint proves nothing about the protected paths.
+    r = _exec(
+        "submit_contract",
+        human,
+        {"task_id": task_id, "objective": "checkpoint"},
+        idempotency_key="cp-sc",
+        message_id=f"cp-sc-{seed}",
+    )
+    assert r.ok, r
+    decision_id = r.data["decision_id"]
+    content_hash = r.data["content_hash"]
+    version = r.data["contract_version"]
+
+    r = _exec(
+        "approve_contract",
+        human,
+        {
+            "decision_id": decision_id,
+            "expected_target_hash": content_hash,
+            "expected_target_version": version,
+        },
+        idempotency_key="cp-approve",
+        message_id=f"cp-ap-{seed}",
+    )
+    assert r.ok, r
+    approved_once = True
+    formal_approvals += 1
+
+    # The same approval again must replay, never create a second formal decision.
+    r = _exec(
+        "approve_contract",
+        human,
+        {
+            "decision_id": decision_id,
+            "expected_target_hash": content_hash,
+            "expected_target_version": version,
+        },
+        message_id=f"cp-dup-ap-{seed}",
+    )
+    assert r.ok and (r.replayed or r.data.get("replayed")), r
+
+    # A User Agent self-reporting as approver must be refused.
+    r = _exec(
+        "approve_contract",
+        ua,
+        {"decision_id": decision_id},
+        message_id=f"cp-ua-ap-{seed}",
+    )
+    assert not r.ok
+
+    r = _exec(
+        "activate_minimal_plan",
+        human,
+        {"task_id": task_id},
+        idempotency_key="cp-plan",
+        message_id=f"cp-plan-{seed}",
+    )
+    assert r.ok, r
+
+    r = _exec(
+        "dispatch_ready_runs",
+        human,
+        {"task_id": task_id},
+        message_id=f"cp-di-{seed}",
+    )
+    assert r.ok and r.data["created_runs"], r
+    checkpoint_run_id = r.data["created_runs"][0]
+    known_run_ids.append(checkpoint_run_id)
+    valid_dispatches += 1
+
+    checkpoint_run = next(
+        x for x in svc.list_runs(task_id) if x["run_id"] == checkpoint_run_id
+    )
+    r = _exec(
+        "submit_result",
+        run_auth(svc, checkpoint_run_id),
+        {
+            "run_id": checkpoint_run_id,
+            "fencing_epoch": checkpoint_run["fencing_epoch"],
+            "result": {
+                "outcome": "COMPLETED",
+                "verdict": "PASS",
+                "artifact_refs": [f"art-{checkpoint_run_id}"],
+            },
+        },
+        message_id=f"cp-sr-{seed}",
+    )
+    assert r.ok, r
+    worker_submissions += 1
+
+    # ----------------------------------------------------------- random walk
+    remaining = max(steps - execute_count, 1)
+    for step in range(remaining):
         state = svc.get_task(task_id)["state"]
+        op = _pick_op(rng, state, decision_id, approved_once, known_run_ids)
         terminal = state in {TaskState.ABORTED, TaskState.COMPLETED, TaskState.FAILED}
 
         if terminal or op == "terminal_illegal":
@@ -84,7 +259,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 except AssertionError:
                     worker = None
                 if worker is not None:
-                    r = _exec(
+                    _exec(
                         "submit_result",
                         worker,
                         {
@@ -95,7 +270,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                         message_id=f"term-late-{seed}-{step}",
                     )
                 else:
-                    r = _exec(
+                    _exec(
                         "submit_result",
                         human,
                         {
@@ -107,7 +282,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                     )
                 # may fail (terminal run) or be late history — must not revive task
             else:
-                r = _exec(
+                _exec(
                     "dispatch_ready_runs",
                     human,
                     {"task_id": task_id},
@@ -172,7 +347,11 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                 message_id=f"dap-{seed}-{step}",
             )
             if r.ok:
-                assert r.replayed or r.data.get("replayed") or r.data["status"] == DecisionStatus.APPROVED
+                assert (
+                    r.replayed
+                    or r.data.get("replayed")
+                    or r.data["status"] == DecisionStatus.APPROVED
+                )
 
         elif op == "ua_approve" and decision_id:
             r = _exec(
@@ -229,7 +408,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
         elif op == "submit_result":
             for run in svc.list_runs(task_id):
                 if run["status"] == "RUNNING":
-                    _exec(
+                    r = _exec(
                         "submit_result",
                         run_auth(svc, run["run_id"]),
                         {
@@ -243,6 +422,8 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
                         },
                         message_id=f"sr-{seed}-{step}",
                     )
+                    if r.ok:
+                        worker_submissions += 1
                     if run["run_id"] not in known_run_ids:
                         known_run_ids.append(run["run_id"])
                     break
@@ -386,6 +567,15 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
             assert "decision.resolved" in events
 
     assert formal_approvals <= 1
+    approved_by_target = _approved_decisions_by_target(svc)
+    assert approved_by_target[content_hash] == 1, (
+        f"seed {seed}: checkpoint target hash approved "
+        f"{approved_by_target[content_hash]} times"
+    )
+    assert max(approved_by_target.values()) == 1, (
+        f"seed {seed}: a target hash was formally approved more than once: "
+        f"{dict(approved_by_target)}"
+    )
     assert execute_count >= steps, (
         f"seed {seed}: expected >= {steps} execute() calls, got {execute_count}"
     )
@@ -395,6 +585,7 @@ def _run_trajectory(tmp_path, seed: int, steps: int = 200) -> dict:
         "op_counts": dict(op_counts),
         "formal_approvals": formal_approvals,
         "valid_dispatches": valid_dispatches,
+        "worker_submissions": worker_submissions,
         "final_state": svc.get_task(task_id)["state"],
     }
 
@@ -406,6 +597,13 @@ def test_100_fixed_seeds(tmp_path):
     assert all(s["execute_count"] >= 200 for s in summaries)
     # At least create_task + trajectory steps
     assert min(s["execute_count"] for s in summaries) >= 200
+    # The measurement must exercise the paths it exists to protect: every seed
+    # reaches a live dispatch and a worker result through the checkpoint, and
+    # almost every seed ends in a terminal state after the random walk.
+    assert all(s["valid_dispatches"] >= 1 for s in summaries)
+    assert all(s["worker_submissions"] >= 1 for s in summaries)
+    terminal_states = {TaskState.COMPLETED, TaskState.ABORTED, TaskState.FAILED}
+    assert sum(1 for s in summaries if s["final_state"] in terminal_states) >= 95
 
 
 def test_random_schedule_reports_real_input_counts(tmp_path):

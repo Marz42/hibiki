@@ -1,0 +1,9 @@
+M README.md
+ M docs/acceptance/M0-2026-09-07.md
+ M src/hibiki/application/bootstrap.py
+ M src/hibiki/domain/errors.py
+ M src/hibiki/interfaces/cli/main.py
+ M tests/property/test_random_schedule.py
+ M tests/recovery/test_recovery.py
+?? docs/acceptance/M0-2026-09-13.md
+?? docs/acceptance/evidence/m0-2026-09-13/

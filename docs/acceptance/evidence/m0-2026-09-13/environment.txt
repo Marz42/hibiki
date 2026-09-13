@@ -1,0 +1,34 @@
+HIBIKI M0 re-acceptance environment (post R8 repair)
+date_utc=2026-09-13T08:02:23Z
+baseline_commit_before_repairs=c810aebfa6af11cf425b749390f67a55f6efd75b
+working_tree_at_measurement=repairs uncommitted; manifest below fingerprints src/, tests/, alembic/, pyproject.toml, alembic.ini, uv.lock
+source_tree_sha256=99681AD35E60A8EED49A1761E20C03D3BFC34D66EDE8FB71B8EE83421FD765A5
+uv_lock_sha256=4A59AC044FA3B5D327D1DD964012AE452B9822CF8E1F8EB5C86D31C244BC02A4
+os=Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41
+os_release=Debian GNU/Linux 13 (trixie)
+cpu=x86_64
+logical_cpus=16
+ram_gib=23
+python=3.12.12 (uv .venv)
+sqlite=3.50.4 (stdlib bundled with CPython)
+sqlalchemy=2.0.52
+alembic=1.19.2
+pydantic=2.13.5
+pytest=9.1.1
+hibiki=0.1.0
+uv=0.10.0
+adapters=FakeAgentAdapter, FakeClock, FakeExternalAdapter
+profiles=fake (in-test)
+model=none (no LLM)
+network=offline; suite uses Fake adapters only
+db_size=ephemeral per-test tmp_path SQLite
+test_data_version=in-repo tests/ as fingerprinted by source-tree.sha256
+command_full_suite=uv run --no-sync pytest tests/ -vv --tb=short --junitxml=docs/acceptance/evidence/m0-2026-09-13/junit-full.xml
+result_full_suite=102 tests, 0 failures, 0 errors, 0 skipped, 92.932s
+command_scenario_catalog=uv run --no-sync pytest tests/application/test_m0_acceptance.py -vv --junitxml=.../junit-h-catalog.xml
+result_scenario_catalog=30 tests, 0 failures, 0 errors, 0 skipped, 3.707s
+command_seeds=100 fixed seeds, steps=200, tests/property/test_random_schedule.py::_run_trajectory
+result_seeds=100/100 trajectories, 20337 inputs total (min 200, max 211); 100/100 dispatch, 100/100 worker results, 176 dispatches and 176 worker submissions, terminal states 98 ABORTED + 2 EXECUTING
+command_cli_smoke=bash docs/acceptance/evidence/m0-2026-09-13/cli-smoke.sh > cli-smoke.log (script kept alongside its output)
+command_schema_refusal=recorded in schema-refusal.log (cases A, A2, B, C, E, G, F)
+lint=uv run ruff check src tests -> pass; uv run ruff format --check -> 10 files would be reformatted (see ruff.txt)
