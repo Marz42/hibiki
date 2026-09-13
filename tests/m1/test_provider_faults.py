@@ -267,3 +267,71 @@ def test_stop_cap_bounds_a_hanging_provider_call(tmp_path, faulty):
     assert elapsed < 15, f"stop took {elapsed:.1f}s against a 2s stop cap"
     result = _result_of(svc, task_id)
     assert result is None or result["outcome"] != "COMPLETED"
+
+
+def test_harness_survives_a_chaotic_provider_without_invariant_violations(tmp_path, monkeypatch):
+    """Chaos rehearsal: random provider faults must never break an invariant.
+
+    The whole harness (all three fixed tasks) runs against a provider that independently
+    injects rate limits, 5xx, malformed bodies and slow replies on ~30% of requests. No
+    run may hang, claim success after a failed model call, or register a fabricated
+    artifact; surviving runs must still carry fully verified evidence.
+    """
+    import json
+
+    from tools.fake_openai_server import FakeServer
+
+    port = _free_port()
+    server = FakeServer(
+        ("127.0.0.1", port),
+        fault_ratio=0.3,
+        seed=11,
+        slow_seconds=0.05,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("HIBIKI_MODEL_BASE_URL", f"http://127.0.0.1:{port}/v1")
+    monkeypatch.setenv("HIBIKI_MODEL_API_KEY", "sk-chaos")
+    monkeypatch.setenv("HIBIKI_MODEL", "chaos-model")
+    try:
+        from hibiki.interfaces.m1_runner import main as runner_main
+
+        out = tmp_path / "out"
+        code = runner_main(
+            [
+                "--data-dir",
+                str(tmp_path / "data"),
+                "--out",
+                str(out),
+                "--tasks",
+                "docs/m1/tasks",
+                "--repeats",
+                "1",
+            ]
+        )
+        summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+    assert summary["runs"] == 3
+    assert code in (0, 1)
+    records = [
+        json.loads(path.read_text(encoding="utf-8")) for path in sorted(out.glob("*-run1.json"))
+    ]
+    assert len(records) == 3
+    for record in records:
+        result = record.get("result")
+        assert result is not None, "every run must reach a recorded terminal result"
+        assert record["run_status"] in {"SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED", "LOST"}
+        assert record["context_manifest_id"] and record["spec_hash"]
+        # No fabricated reference may ever be counted as a delivery.
+        assert record.get("unbacked_artifact_refs") in ([], None)
+        for check in record.get("artifact_checks") or []:
+            assert check["verified"] is True
+        if result["outcome"] == "COMPLETED":
+            assert result["verdict"] == "PASS"
+        else:
+            assert result["verdict"] == "FAIL"
+            assert result.get("error_class")

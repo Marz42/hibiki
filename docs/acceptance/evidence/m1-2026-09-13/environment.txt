@@ -22,5 +22,6 @@ command_harness_smoke=HIBIKI_MODEL_BASE_URL=http://127.0.0.1:8770/v1 HIBIKI_MODE
 result_harness_smoke=6/6 runs passed (gate MET)
 stop_budget=[M1-G5] stop request -> confirmed executor exit: 0.17s (sleep 30); [M1-G5] pause_task -> executor exit: 0.21s (sleep 30)
 provider_faults=tests/m1/test_provider_faults.py drives the real adapter against a local OpenAI-compatible server injecting 429/5xx/401/malformed/empty-choices/truncated-tool-args/hang; 10 tests, 0 failures (junit-provider-faults.xml)
+chaos=python tools/fake_openai_server.py --port 8790 --fault-ratio 0.3 --seed 7, then the harness against it; every run terminal, failures BLOCKED/FAIL, no invariant violation (chaos-run-summary.json)
 dry_run=uv run --no-sync python -m hibiki.interfaces.m1_runner --dry-run ... proves the full task->contract->plan->workspace->dispatch->worker->result path with no provider; all runs end BLOCKED (never PASS) and every required record field is present (dry-run-summary.json)
 note=these are pre-credential measurements; the live §24.4 gate requires the operator's model credentials

@@ -1,0 +1,56 @@
+{
+  "task_id": "k1",
+  "attempt": 1,
+  "ok": false,
+  "workspace": "/tmp/m1-chaos/k1/run1/workspaces/ws_k1_wu1",
+  "seed_files": [
+    "input.txt"
+  ],
+  "run_id": "run_ad831da826be4b14",
+  "elapsed_s": 1.58,
+  "run_status": "SUCCEEDED",
+  "terminal_reason": null,
+  "spec_hash": "7e1e4b2ab76d339e3fe1d8297b8d2933a0796da13e7a048b0cf28052c96d54af",
+  "context_manifest_id": "ctx_af7d802b0ac1448e",
+  "granted_tools": [
+    "fs.read",
+    "fs.list",
+    "fs.write",
+    "artifact.publish"
+  ],
+  "result": {
+    "acceptance_evidence": [],
+    "artifact_refs": [],
+    "blockers": [
+      "ModelClientError: model response is missing 'choices'"
+    ],
+    "error_class": "ModelClientError: model response is missing 'choices'",
+    "outcome": "BLOCKED",
+    "summary": "ModelClientError: model response is missing 'choices'",
+    "verdict": "FAIL"
+  },
+  "tool_invocations": [
+    {
+      "sequence_no": 1,
+      "tool_name": "fs.read",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "82f9054a785d7a1a04e1eae2bbbf9dc46f46f76bbc0243ea2350a65795cf40de"
+    },
+    {
+      "sequence_no": 2,
+      "tool_name": "fs.write",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "016135fb9c94bf4856a6cb8561c2bb462d6a65848645495948b0aea463652740"
+    }
+  ],
+  "artifacts": [],
+  "artifact_checks": [],
+  "unbacked_artifact_refs": [],
+  "task_state": "EXECUTING",
+  "model_calls_used": 3,
+  "internal_task_id": "task_c470c24593a043c5"
+}

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -175,6 +176,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _fault(self, request_index: int) -> str | None:
         """Which fault to apply to this request, if any (see ``--fault``)."""
+        if self.server.fault_ratio is not None:
+            # Chaos mode: independently perturbs each request with a real-world fault
+            # set (rate limit, server error, malformed body, slow reply).
+            with self.server.lock:
+                if self.server.rng.random() >= self.server.fault_ratio:
+                    return None
+                return self.server.rng.choice(
+                    ["rate_limit", "server_error", "malformed", "slow"]
+                )
         fault = self.server.fault
         if not fault:
             return None
@@ -231,6 +241,9 @@ class Handler(BaseHTTPRequestHandler):
                     "usage": {"total_tokens": 1},
                 },
             )
+        elif fault == "slow":
+            time.sleep(self.server.slow_seconds)
+            self._send_json(200, {"choices": []})
         elif fault == "hang":
             time.sleep(self.server.hang_seconds)
             self._send_json(200, {"choices": []})
@@ -313,6 +326,9 @@ class FakeServer(ThreadingHTTPServer):
         fault_mode: str = "always",
         fault_after: int = 0,
         hang_seconds: float = 30.0,
+        fault_ratio: float | None = None,
+        seed: int = 0,
+        slow_seconds: float = 0.3,
     ) -> None:
         super().__init__(address, Handler)
         self.steps: dict[str, int] = {}
@@ -321,6 +337,9 @@ class FakeServer(ThreadingHTTPServer):
         self.fault_mode = fault_mode
         self.fault_after = fault_after
         self.hang_seconds = hang_seconds
+        self.fault_ratio = fault_ratio
+        self.slow_seconds = slow_seconds
+        self.rng = random.Random(seed)
         self.request_count = 0
 
 
@@ -346,6 +365,14 @@ def main() -> int:
     parser.add_argument("--fault-mode", default="always", choices=["always", "first", "after"])
     parser.add_argument("--fault-after", type=int, default=0)
     parser.add_argument("--hang-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--fault-ratio",
+        type=float,
+        default=None,
+        help="chaos mode: probability of injecting a random fault per request (0..1)",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--slow-seconds", type=float, default=0.3)
     args = parser.parse_args()
     server = FakeServer(
         (args.host, args.port),
@@ -353,6 +380,9 @@ def main() -> int:
         fault_mode=args.fault_mode,
         fault_after=args.fault_after,
         hang_seconds=args.hang_seconds,
+        fault_ratio=args.fault_ratio,
+        seed=args.seed,
+        slow_seconds=args.slow_seconds,
     )
     print(f"fake OpenAI-compatible server on http://{args.host}:{args.port}/v1", flush=True)
     try:
