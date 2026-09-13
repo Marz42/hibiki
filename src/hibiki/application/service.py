@@ -102,6 +102,20 @@ def _json_list(raw: str | None, key: str | None) -> list[dict[str, Any]]:
     return [item for item in parsed if isinstance(item, dict)]
 
 
+def lost_run_recovery_policy(*, has_effect: bool, attempts: int, max_attempts: int) -> str:
+    """What to do with a LOST Run (SPEC §17 / §19.1).
+
+    A lost Run whose tools may have produced an external effect is never retried
+    automatically; it waits for human review. Without an effect, a retry is allowed
+    only while attempts remain.
+    """
+    if has_effect:
+        return "BLOCKED"
+    if attempts >= max_attempts:
+        return "BLOCKED"
+    return "RETRY"
+
+
 def _mandatory_context_bytes(
     session: Session,
     mandatory: list[dict[str, Any]],
