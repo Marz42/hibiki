@@ -156,8 +156,12 @@ class WorkspacePaths:
         finally:
             os.close(parent_fd)
 
-    def atomic_write(self, relative: str, content: bytes) -> str:
-        """Write ``content`` atomically inside the walked directory; return its sha256."""
+    def atomic_write(self, relative: str, content: bytes, *, mode: int = 0o644) -> str:
+        """Write ``content`` atomically inside the walked directory; return its sha256.
+
+        The default mode is world-readable because the sandbox runs as uid 65534 and
+        must be able to read the files the broker wrote into the workspace.
+        """
         if not isinstance(content, (bytes, bytearray, memoryview)):
             raise TypeError("content must be bytes-like")
         data = bytes(content)
@@ -173,7 +177,7 @@ class WorkspacePaths:
             fd = os.open(
                 tmp_name,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
+                mode,
                 dir_fd=parent_fd,
             )
             try:

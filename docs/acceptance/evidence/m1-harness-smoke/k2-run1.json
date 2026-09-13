@@ -1,0 +1,77 @@
+{
+  "task_id": "k2",
+  "attempt": 1,
+  "ok": true,
+  "workspace": "/tmp/m1-smoke/k2/run1/workspaces/ws_k2_wu1",
+  "seed_files": [
+    "input.csv"
+  ],
+  "run_id": "run_5535aa706bcc4094",
+  "elapsed_s": 0.57,
+  "run_status": "SUCCEEDED",
+  "terminal_reason": null,
+  "spec_hash": "db9f5ddf150de0c2830b7c734220a168fa4e07e30fd60fbd400a4f25f49201fa",
+  "context_manifest_id": "ctx_cddd3c00e30b41ed",
+  "granted_tools": [
+    "fs.read",
+    "fs.list",
+    "fs.write",
+    "artifact.publish"
+  ],
+  "result": {
+    "acceptance_evidence": [],
+    "artifact_refs": [
+      "6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421"
+    ],
+    "outcome": "COMPLETED",
+    "summary": "Converted input.csv into output.json and published it. artifact_refs=[\"6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421\"]",
+    "verdict": "PASS"
+  },
+  "tool_invocations": [
+    {
+      "sequence_no": 1,
+      "tool_name": "fs.read",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "9ca9b0448e6f30bf50536c9e518c9fa737c4215fb99d842da799d96017722e0f"
+    },
+    {
+      "sequence_no": 2,
+      "tool_name": "fs.write",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "7d332c686cb5854b0d226df9804818dfa86093e4a609a8286485d1768c22b435"
+    },
+    {
+      "sequence_no": 3,
+      "tool_name": "artifact.publish",
+      "decision": "ALLOW",
+      "deny_reason": null,
+      "outcome": "ok",
+      "parameters_hash": "957fc2ec540c161a60160998b6cce1f23ba9eb4fd7ea278a506e17f1ef98f435"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_hash": "6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421",
+      "uri": "artifact://6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421",
+      "size": 192,
+      "source_path": "output.json",
+      "run_id": "run_5535aa706bcc4094"
+    }
+  ],
+  "artifact_checks": [
+    {
+      "verified": true,
+      "artifact_hash": "6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421",
+      "actual_hash": "6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421",
+      "size": 192
+    }
+  ],
+  "unbacked_artifact_refs": [],
+  "task_state": "EXECUTING",
+  "model_calls_used": 4,
+  "internal_task_id": "task_cee6f35d97fc4e22"
+}

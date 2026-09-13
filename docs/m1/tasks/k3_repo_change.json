@@ -1,0 +1,27 @@
+{
+  "task_id": "k3",
+  "title": "Change code in a controlled sample repo and make its tests pass",
+  "description": "SPEC §24.4 G3 task 3: controlled sample-repo code change plus tests.",
+  "intent": "Fix the failing function in the sample module and prove it with the test suite.",
+  "objective": "Read sample.py, fix `add` so it returns the sum, run the test suite with shell.run, and publish the fixed file as an artifact.",
+  "permission_ceiling": { "tools": ["fs.read", "fs.list", "fs.write", "shell.run", "artifact.publish"] },
+  "resource_limits": {
+    "wall_timeout_seconds": 420,
+    "max_turns": 12,
+    "max_model_calls": 20,
+    "context_max_materialized_bytes": 262144
+  },
+  "seed_files": {
+    "sample.py": "def add(a, b):\n    return a - b\n",
+    "test_sample.py": "from sample import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n\n\ndef test_add_negative():\n    assert add(-1, 1) == 0\n"
+  },
+  "deliverables": [
+    { "deliverable_id": "d_code", "description": "sample.py with a correct add()", "expected_kind": "text" },
+    { "deliverable_id": "d_test", "description": "passing test run output", "expected_kind": "text" }
+  ],
+  "acceptance_criteria": [
+    { "criterion_id": "c1", "statement": "sample.py implements add correctly", "evidence_kind": "artifact", "required": true },
+    { "criterion_id": "c2", "statement": "pytest passes inside the sandbox", "evidence_kind": "artifact", "required": true }
+  ],
+  "expected_artifacts": ["sample.py"]
+}

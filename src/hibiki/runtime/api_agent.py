@@ -534,6 +534,26 @@ class ApiAgentAdapter(AgentAdapter):
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
+    def _sandbox_for(self, spec: dict[str, Any]) -> Any:
+        """A sandbox whose workspace mount is *this Run's* workspace (SPEC §11.1).
+
+        Mounting a shared root would let one Run read another Run's files, so when the
+        injected sandbox exposes its spec we re-create it per Run with the workspace
+        from the frozen execution contract. Without a workspace path we refuse rather
+        than fall back to a shared mount.
+        """
+        workspace = str(spec.get("workspace_path") or "")
+        if not workspace:
+            return None
+        sandbox_spec = getattr(self._sandbox, "spec", None)
+        if sandbox_spec is None:
+            return self._sandbox
+        from dataclasses import replace
+
+        from hibiki.tools.sandbox import DockerSandboxAdapter
+
+        return DockerSandboxAdapter(replace(sandbox_spec, workspace_host_path=workspace))
+
     def _dispatch_shell(
         self,
         record: _RunRecord,
@@ -545,7 +565,8 @@ class ApiAgentAdapter(AgentAdapter):
         decision = self._broker.authorize(auth, request)
         if not getattr(decision, "allowed", False):
             return {"status": "denied", "reason": getattr(decision, "reason", "denied")}
-        if self._sandbox is None:
+        sandbox = self._sandbox_for(spec)
+        if sandbox is None:
             self._finish_invocation(auth, decision, "error", {"error": "sandbox_unavailable"})
             return {"status": "error", "error": "sandbox_unavailable"}
         try:
@@ -553,7 +574,7 @@ class ApiAgentAdapter(AgentAdapter):
             # Hand the run's stop event to the sandbox so a Pause/Cancel kills the
             # container immediately instead of waiting for the command's wall clock.
             command["cancel_event"] = record.stop_event
-            result = dict(self._sandbox.execute(command) or {})
+            result = dict(sandbox.execute(command) or {})
         except Exception as exc:  # noqa: BLE001
             detail = f"{type(exc).__name__}: {exc}"
             self._finish_invocation(auth, decision, "error", {"error": detail})
@@ -877,12 +898,18 @@ def _context_append_texts(
     return texts
 
 
+#: Result keys that mean "the Core registered this content as an Artifact". A plain
+#: file digest from ``fs.write`` is NOT an artifact reference and must never be
+#: submitted as one.
+_ARTIFACT_REF_KEYS = ("artifact_hash", "artifact_ref")
+
+
 def _artifact_ref(result: dict[str, Any]) -> str | None:
     if not isinstance(result, dict):
         return None
     if str(result.get("status") or "") not in {"ok", "published"}:
         return None
-    for key in ("artifact_hash", "hash", "sha256", "artifact_ref", "ref"):
+    for key in _ARTIFACT_REF_KEYS:
         value = result.get(key)
         if isinstance(value, str) and value:
             return value

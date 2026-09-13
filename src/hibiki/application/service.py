@@ -4762,6 +4762,27 @@ class ApplicationService:
             "size": len(content),
         }
 
+    def list_unbacked_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        """Artifact references with no stored content (SPEC §11.3 diagnostics).
+
+        A Result may name artifact hashes the Core never received bytes for (a worker
+        typo, or a fabricated reference). Such a hash must not be treated as a
+        delivery: it is reported here so acceptance can refuse it.
+        """
+        rows = self.executor.run(
+            lambda s: [
+                {
+                    "artifact_hash": a.artifact_hash,
+                    "uri": a.artifact_uri,
+                    "run_id": a.run_id,
+                }
+                for a in s.scalars(
+                    select(ArtifactRow).where(ArtifactRow.task_id == task_id)
+                ).all()
+            ]
+        )
+        return [row for row in rows if not row["uri"]]
+
     def list_orphan_artifacts(self) -> list[str]:
         """Content files present in the store but referenced by no Artifact row."""
         if self._artifacts is None:

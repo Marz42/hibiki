@@ -1,0 +1,81 @@
+{
+  "model": "fake-model",
+  "base_url": "http://127.0.0.1:8769/v1",
+  "runs": 6,
+  "passed": 6,
+  "gate_met": true,
+  "records": [
+    {
+      "task_id": "k1",
+      "attempt": 1,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.6,
+      "model_calls_used": 4,
+      "artifact_hashes": [
+        "f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k1",
+      "attempt": 2,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 4,
+      "artifact_hashes": [
+        "f4ee77be10524b2800ee18b701782e8f3a72d7ab8ba70cb7843447b636d074ac"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k2",
+      "attempt": 1,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.57,
+      "model_calls_used": 4,
+      "artifact_hashes": [
+        "6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k2",
+      "attempt": 2,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 0.56,
+      "model_calls_used": 4,
+      "artifact_hashes": [
+        "6443240c8dac46cd2214f4aad0722f1eb020b1e5eda5f74b2649f08f1c2d3421"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k3",
+      "attempt": 1,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 1.07,
+      "model_calls_used": 5,
+      "artifact_hashes": [
+        "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772"
+      ],
+      "error": null
+    },
+    {
+      "task_id": "k3",
+      "attempt": 2,
+      "ok": true,
+      "run_status": "SUCCEEDED",
+      "elapsed_s": 1.07,
+      "model_calls_used": 5,
+      "artifact_hashes": [
+        "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772"
+      ],
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "task_id": "k1",
+  "title": "Summarize an attachment into a structured result",
+  "description": "SPEC §24.4 G3 task 1: attachment summary plus structured result.",
+  "intent": "Read the provided note, write a short summary file, and report a structured result.",
+  "objective": "Produce summary.txt containing a faithful 3-bullet summary of input.txt, then publish it as an artifact.",
+  "permission_ceiling": { "tools": ["fs.read", "fs.list", "fs.write", "artifact.publish"] },
+  "resource_limits": {
+    "wall_timeout_seconds": 300,
+    "max_turns": 8,
+    "max_model_calls": 12,
+    "context_max_materialized_bytes": 262144
+  },
+  "seed_files": {
+    "input.txt": "HIBIKI is a task-centered agent execution system.\nIt freezes authorization in an immutable contract before any worker runs.\nEvery external action is authorized, deduplicated, and unknown outcomes are never blindly replayed.\n"
+  },
+  "deliverables": [
+    { "deliverable_id": "d_summary", "description": "3-bullet summary of input.txt", "expected_kind": "text" }
+  ],
+  "acceptance_criteria": [
+    { "criterion_id": "c1", "statement": "summary.txt exists and covers all three input sentences", "evidence_kind": "artifact", "required": true }
+  ],
+  "expected_artifacts": ["summary.txt"]
+}

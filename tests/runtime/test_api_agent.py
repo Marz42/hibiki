@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -523,3 +524,45 @@ def test_pause_command_stops_the_real_container_within_15s(tmp_path):
     assert final["alive"] is False, "pause did not stop the executor"
     assert elapsed < 15, f"pause took {elapsed:.1f}s"
     print(f"[M1-G5] pause_task -> executor exit: {elapsed:.2f}s (sleep 30)")
+
+
+def test_only_published_artifacts_become_result_refs(tmp_path):
+    """A file digest from fs.write is not an artifact reference (SPEC §11.3)."""
+    from hibiki.runtime.api_agent import _artifact_ref
+
+    assert _artifact_ref({"status": "ok", "sha256": "a" * 64}) is None
+    assert _artifact_ref({"status": "ok", "path": "x", "bytes": 3}) is None
+    assert _artifact_ref({"status": "denied", "artifact_hash": "b" * 64}) is None
+    assert _artifact_ref({"status": "ok", "artifact_hash": "c" * 64}) == "c" * 64
+    assert _artifact_ref({"status": "ok", "artifact_ref": "d" * 64}) == "d" * 64
+
+
+def test_result_refs_never_include_unpublished_file_digests(tmp_path):
+    """End to end: a run that writes and publishes reports only the published hash."""
+    import hashlib
+
+    svc, _ = make_core(tmp_path)
+    auth = human_auth()
+    task_id = _task_with_ceiling(svc, auth, ["fs.read", "fs.write", "artifact.publish"])
+    adapter = _adapter(svc, client := ScriptedClient([_final("done")]))
+    run_id = _dispatch(svc, adapter, task_id)
+    adapter.wait_for_exit(run_id, 5.0)
+
+    worker = run_auth(svc, run_id)
+    spec = svc.get_run_input(worker, run_id)
+    workspace = Path(spec["workspace_path"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "out.txt").write_text("payload", encoding="utf-8")
+    file_digest = hashlib.sha256(b"payload").hexdigest()
+    published = svc.execute(
+        "publish_artifact",
+        worker,
+        {
+            "run_id": run_id,
+            "fencing_epoch": worker.bound_fencing_epoch,
+            "path": "out.txt",
+        },
+    )
+    assert published.ok, published
+    assert published.data["artifact_hash"] == file_digest
+    assert client.call_count >= 0

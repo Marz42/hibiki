@@ -1,0 +1,24 @@
+{
+  "task_id": "k2",
+  "title": "Convert a small data file",
+  "description": "SPEC §24.4 G3 task 2: small file conversion.",
+  "intent": "Convert the CSV input into a normalized JSON array and publish it.",
+  "objective": "Read input.csv, write output.json as a JSON array of objects with numeric fields converted to numbers, then publish it as an artifact.",
+  "permission_ceiling": { "tools": ["fs.read", "fs.list", "fs.write", "artifact.publish"] },
+  "resource_limits": {
+    "wall_timeout_seconds": 300,
+    "max_turns": 8,
+    "max_model_calls": 12,
+    "context_max_materialized_bytes": 262144
+  },
+  "seed_files": {
+    "input.csv": "name,count,ratio\nalpha,3,0.5\nbeta,10,1.25\ngamma,0,0.0\n"
+  },
+  "deliverables": [
+    { "deliverable_id": "d_json", "description": "output.json with three converted records", "expected_kind": "text" }
+  ],
+  "acceptance_criteria": [
+    { "criterion_id": "c1", "statement": "output.json parses as a JSON array with numeric count/ratio", "evidence_kind": "artifact", "required": true }
+  ],
+  "expected_artifacts": ["output.json"]
+}
