@@ -23,6 +23,12 @@ from typing import BinaryIO
 #: safety refusal rather than a generic filesystem error.
 _SYMLINK_REASON = "refusing to follow a symlink"
 
+#: Linux/macOS expose these open(2) flags; Windows does not. Fall back to 0 and
+#: compensate with an explicit symlink check before each open on those hosts.
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
 
 class PathSafetyError(ValueError):
     """A requested relative path violates the workspace containment rules."""
@@ -57,7 +63,7 @@ class WorkspacePaths:
             raise NotADirectoryError(errno.ENOTDIR, "workspace root is not a directory", raw)
         self._root = resolved
         self._root_fd: int | None = os.open(
-            resolved, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+            resolved, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC
         )
 
     @property
@@ -123,7 +129,7 @@ class WorkspacePaths:
         parts = self._validate(relative)
         parent_fd = self._walk(parts[:-1], create=False)
         try:
-            fd = self._open_final(parent_fd, parts[-1], os.O_RDONLY | os.O_DIRECTORY)
+            fd = self._open_final(parent_fd, parts[-1], os.O_RDONLY | _O_DIRECTORY)
             try:
                 return sorted(os.listdir(fd))
             finally:
@@ -190,7 +196,7 @@ class WorkspacePaths:
                 )
             fd = os.open(
                 tmp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC,
                 mode,
                 dir_fd=parent_fd,
             )
@@ -262,7 +268,9 @@ class WorkspacePaths:
             raise
 
     def _open_dir(self, parent_fd: int, name: str, *, create: bool) -> int:
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        if _O_NOFOLLOW == 0 and _is_symlink(parent_fd, name):
+            raise PathSafetyError(f"{_SYMLINK_REASON} in path component {name!r}")
+        flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
         try:
             return os.open(name, flags, dir_fd=parent_fd)
         except FileNotFoundError:
@@ -289,9 +297,11 @@ class WorkspacePaths:
         return exc
 
     def _open_final(self, parent_fd: int, name: str, flags: int, mode: int = 0o644) -> int:
+        if _O_NOFOLLOW == 0 and _is_symlink(parent_fd, name):
+            raise PathSafetyError(f"{_SYMLINK_REASON} at {name!r}")
         try:
             return os.open(
-                name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=parent_fd
+                name, flags | _O_NOFOLLOW | _O_CLOEXEC, mode, dir_fd=parent_fd
             )
         except OSError as exc:
             # O_NOFOLLOW on a symlink is ELOOP for a file target and ENOTDIR when

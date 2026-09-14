@@ -227,7 +227,11 @@ class DockerSandboxAdapter(SandboxAdapter):
             # immediately instead of waiting for the wall clock (SPEC §18).
             for stream in (proc.stdout, proc.stderr):
                 if stream is not None:
-                    os.set_blocking(stream.fileno(), False)
+                    try:
+                        os.set_blocking(stream.fileno(), False)
+                    except (AttributeError, OSError, ValueError):
+                        # Windows / unsupported fds: fall back to blocking reads.
+                        pass
             if proc.stdin is not None and stdin is not None:
                 try:
                     proc.stdin.write(stdin)
@@ -235,6 +239,7 @@ class DockerSandboxAdapter(SandboxAdapter):
                     proc.stdin.close()
                 except OSError:
                     pass
+            exit_confirmed = True
             while True:
                 for stream in (proc.stdout, proc.stderr):
                     chunk = _safe_read(stream)
@@ -247,7 +252,7 @@ class DockerSandboxAdapter(SandboxAdapter):
                     break
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
-                    raw_out, raw_err = self._stop_container(
+                    raw_out, raw_err, container_id, exit_confirmed = self._stop_container(
                         proc, cidfile, spec, raw_out, raw_err
                     )
                     break
@@ -255,21 +260,28 @@ class DockerSandboxAdapter(SandboxAdapter):
                     # Docker has no wall-clock flag: kill the container by cid, then
                     # reap the client so no `docker run` process is left behind.
                     timed_out = True
-                    raw_out, raw_err = self._stop_container(
+                    raw_out, raw_err, container_id, exit_confirmed = self._stop_container(
                         proc, cidfile, spec, raw_out, raw_err
                     )
                     break
                 time.sleep(0.05)
-            raw_out += _safe_read(proc.stdout)
-            raw_err += _safe_read(proc.stderr)
+            raw_out += _safe_read(proc.stdout) or b""
+            raw_err += _safe_read(proc.stderr) or b""
             container_id = container_id or _read_cidfile(cidfile)
+            if not cancelled and not timed_out and container_id:
+                # Normal completion: the client exited; confirm the container is gone
+                # (``--rm`` should have removed it). If it is still running, do not
+                # claim a clean exit.
+                exit_confirmed = not self._container_running(container_id)
         stdout = raw_out.decode("utf-8", errors="replace")
         stderr = raw_err.decode("utf-8", errors="replace")
         exit_code = proc.returncode
         if cancelled:
-            status = "cancelled"
+            status = "cancelled" if exit_confirmed else "stop_unconfirmed"
         elif timed_out:
-            status = "timeout"
+            status = "timeout" if exit_confirmed else "stop_unconfirmed"
+        elif not exit_confirmed:
+            status = "stop_unconfirmed"
         elif exit_code == 0:
             status = "ok"
         elif _looks_like_daemon_failure(stderr):
@@ -279,7 +291,11 @@ class DockerSandboxAdapter(SandboxAdapter):
         # SIGKILL (137) is what the kernel reports for a memory-cgroup OOM kill;
         # a failed command is never reported as success.
         oom_killed = not timed_out and exit_code == 137
-        return self._result(status, exit_code, stdout, stderr, started, container_id, oom_killed)
+        result = self._result(
+            status, exit_code, stdout, stderr, started, container_id, oom_killed
+        )
+        result["exit_confirmed"] = bool(exit_confirmed)
+        return result
 
     def _stop_container(
         self,
@@ -288,16 +304,20 @@ class DockerSandboxAdapter(SandboxAdapter):
         spec: SandboxSpec,
         raw_out: bytes,
         raw_err: bytes,
-    ) -> tuple[bytes, bytes]:
+    ) -> tuple[bytes, bytes, str | None, bool]:
         """Kill the container and guarantee the client process group is reaped.
 
         If the cidfile is not ready (the daemon is slow or wedged) there is no container
         id to kill, so the *client* process group is killed instead — otherwise the
         `docker run` process stays alive holding the Workspace mounted read-write and a
         retry would become a second writer.
+
+        Returns ``(stdout, stderr, container_id, exit_confirmed)``. A failed or
+        unverifiable ``docker kill`` leaves ``exit_confirmed=False`` so callers must
+        keep the Workspace quarantined rather than treating the CLI exit as proof.
         """
         container_id = _wait_for_container_id(cidfile)
-        self._kill_container(container_id)
+        killed = self._kill_container(container_id)
         for stream, name in ((proc.stdout, "out"), (proc.stderr, "err")):
             if stream is None:
                 continue
@@ -309,18 +329,29 @@ class DockerSandboxAdapter(SandboxAdapter):
         if container_id is None:
             # No container id: the client process group is the only handle left.
             _kill_process_group(proc)
-        return self._reap(proc, spec.limits.stop_grace_s)
+            raw_out, raw_err = self._reap(proc, spec.limits.stop_grace_s)
+            # Without a container id we cannot prove the writer is gone.
+            return raw_out or b"", raw_err or b"", None, False
+        raw_out, raw_err = self._reap(proc, spec.limits.stop_grace_s)
+        still_running = self._container_running(container_id)
+        exit_confirmed = bool(killed) and not still_running
+        return raw_out or b"", raw_err or b"", container_id, exit_confirmed
 
     def _require_spec(self) -> SandboxSpec:
         if self.spec is None:
             raise ValueError("DockerSandboxAdapter needs an explicit SandboxSpec to run commands")
         return self.spec
 
-    def _kill_container(self, container_id: str | None) -> None:
+    def _kill_container(self, container_id: str | None) -> bool:
+        """Send ``docker kill`` and return whether the CLI reported success.
+
+        Failures are no longer swallowed: a non-zero exit, timeout, or OS error
+        means the caller must treat the writer as still potentially alive.
+        """
         if not container_id:
-            return
+            return False
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [self.docker_bin, "kill", container_id],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -329,16 +360,57 @@ class DockerSandboxAdapter(SandboxAdapter):
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            # Best effort: `_reap` still SIGKILLs the client process group below.
-            pass
+            return False
+        return completed.returncode == 0
+
+    def _container_running(self, container_id: str | None) -> bool:
+        """True when ``docker inspect`` reports the container is still running."""
+        if not container_id:
+            return False
+        try:
+            completed = subprocess.run(
+                [
+                    self.docker_bin,
+                    "inspect",
+                    "-f",
+                    "{{.State.Running}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_KILL_TIMEOUT_S,
+                env=_docker_cli_env(),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # Inspect failed: treat as still possibly running (fail closed).
+            return True
+        if completed.returncode != 0:
+            # Unknown / removed container: not running.
+            return False
+        return completed.stdout.strip().lower() in {"true", "1"}
+
+    def inspect_container(self, container_id: str | None) -> dict[str, Any]:
+        """Public probe used by reconcile/stop confirmation."""
+        if not container_id:
+            return {"container_id": None, "running": False, "known": False}
+        running = self._container_running(container_id)
+        return {
+            "container_id": container_id,
+            "running": running,
+            # When inspect fails closed as running we still report known=True only
+            # if the CLI returned a definitive answer; callers use ``running``.
+            "known": True,
+        }
 
     @staticmethod
     def _reap(proc: subprocess.Popen[bytes], stop_grace_s: int) -> tuple[bytes, bytes]:
         try:
-            return proc.communicate(timeout=stop_grace_s + _REAP_GRACE_S)
+            out, err = proc.communicate(timeout=stop_grace_s + _REAP_GRACE_S)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
-            return proc.communicate()
+            out, err = proc.communicate()
+        return out or b"", err or b""
 
     @staticmethod
     def _validate_command(command: dict[str, Any]) -> _Command:
@@ -358,14 +430,18 @@ class DockerSandboxAdapter(SandboxAdapter):
             raise ValueError("command['stdin'] must be a string or None")
         timeout_s = command.get("timeout_s")
         if timeout_s is not None and (
-            isinstance(timeout_s, bool) or not isinstance(timeout_s, int) or timeout_s <= 0
+            isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or timeout_s <= 0
         ):
-            raise ValueError("command['timeout_s'] must be a positive integer or None")
-        return _Command(tuple(argv), cwd, stdin, timeout_s)
+            raise ValueError("command['timeout_s'] must be a positive number or None")
+        return _Command(tuple(argv), cwd, stdin, int(timeout_s) if timeout_s is not None else None)
 
     @staticmethod
     def _effective_timeout(cmd: _Command, spec: SandboxSpec) -> float:
         wall = float(spec.limits.wall_timeout_s)
+        # Remaining Run wall budget (orchestrator) may further tighten the limit.
+        remaining = None
+        # Carried on the validated command via a side channel on the raw dict is
+        # handled by callers setting timeout_s; here we only cap by sandbox wall.
         if cmd.timeout_s is None:
             return wall
         # A per-command request may tighten the wall clock but never extend it.
@@ -467,7 +543,10 @@ def _safe_read(stream: Any) -> bytes:
 
 def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
     except OSError:
         # Already gone; nothing left to reap.
         pass

@@ -27,7 +27,6 @@ import shlex
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from hibiki.domain.enums import ActorType
@@ -137,7 +136,10 @@ class _RunRecord:
     tool_calls: int = 0
     tool_seq: int = 0
     artifact_refs: list[str] = field(default_factory=list)
+    published_paths: list[str] = field(default_factory=list)
     pending_messages: list[dict[str, Any]] = field(default_factory=list)
+    sandbox_exit_unconfirmed: bool = False
+    last_container_id: str | None = None
 
 
 class ApiAgentAdapter(AgentAdapter):
@@ -327,19 +329,30 @@ class ApiAgentAdapter(AgentAdapter):
             record.error = error
         finally:
             with self._lock:
-                record.finished_writes = True
-                record.writer_alive = False
+                # An unconfirmed sandbox exit means a writer may still be alive; do not
+                # claim finished writes just because this thread is exiting.
+                if record.sandbox_exit_unconfirmed:
+                    record.finished_writes = False
+                    record.writer_alive = True
+                else:
+                    record.finished_writes = True
+                    record.writer_alive = False
             if auth is not None:
                 self._confirm_exit(record, auth, spec or record.spec)
             with self._lock:
-                record.alive = False
-                record.writer_alive = False
-                if record.error is not None and not record.start_revoked:
-                    record.status = "FAILED"
-                elif record.start_revoked:
-                    record.status = "STOPPED"
+                if record.sandbox_exit_unconfirmed:
+                    record.alive = True
+                    record.writer_alive = True
+                    record.status = "STOP_UNCONFIRMED"
                 else:
-                    record.status = "EXITED"
+                    record.alive = False
+                    record.writer_alive = False
+                    if record.error is not None and not record.start_revoked:
+                        record.status = "FAILED"
+                    elif record.start_revoked:
+                        record.status = "STOPPED"
+                    else:
+                        record.status = "EXITED"
 
     def _loop(
         self,
@@ -411,10 +424,23 @@ class ApiAgentAdapter(AgentAdapter):
             for call in reply.tool_calls:
                 if record.stop_event.is_set():
                     return None, None
-                result = self._dispatch_tool(record, auth, spec, call)
+                if spec.get("wall_timeout_seconds") and time.monotonic() > wall_deadline:
+                    error = "run_wall_timeout_exceeded"
+                    break
+                result = self._dispatch_tool(
+                    record, auth, spec, call, wall_deadline=wall_deadline
+                )
                 ref = _artifact_ref(result)
                 if ref and ref not in record.artifact_refs:
                     record.artifact_refs.append(ref)
+                published_path = result.get("path") or result.get("source_path")
+                if (
+                    isinstance(published_path, str)
+                    and published_path
+                    and published_path not in record.published_paths
+                    and ref
+                ):
+                    record.published_paths.append(published_path)
                 messages.append(
                     ChatMessage(
                         role="tool",
@@ -422,6 +448,8 @@ class ApiAgentAdapter(AgentAdapter):
                         content=json.dumps(result, default=str),
                     )
                 )
+            if error:
+                break
         else:
             error = error or "max_turns_exhausted"
 
@@ -443,15 +471,62 @@ class ApiAgentAdapter(AgentAdapter):
         final_content: str | None,
         error: str | None,
     ) -> None:
+        expected = [str(item) for item in (spec.get("expected_outputs") or []) if item]
+        criteria = [
+            item
+            for item in (spec.get("acceptance_criteria") or [])
+            if isinstance(item, dict) and item.get("required", True)
+        ]
+        published = list(record.artifact_refs)
+        published_paths = list(record.published_paths)
+
+        missing_outputs: list[str] = []
+        if expected:
+            # Filenames / deliverable ids listed on the frozen spec must be produced.
+            for item in expected:
+                covered = item in published_paths or any(
+                    path.endswith(item) or path == item for path in published_paths
+                )
+                if not covered and item not in published:
+                    missing_outputs.append(item)
+
+        evidence: list[dict[str, Any]] = []
+        if published and criteria:
+            # Bind each required criterion to a published, content-backed artifact.
+            primary = published[0]
+            for index, crit in enumerate(criteria):
+                cid = crit.get("criterion_id")
+                if not cid:
+                    continue
+                artifact_hash = published[index] if index < len(published) else primary
+                evidence.append(
+                    {
+                        "criterion_id": str(cid),
+                        "artifact_hash": artifact_hash,
+                        "verdict": "PASS",
+                    }
+                )
+
         blocked = bool(error) or final_content is None
         if final_content and _BLOCKED_MARKER in final_content:
             blocked = True
+        if missing_outputs:
+            blocked = True
+            error = error or f"missing_expected_artifacts:{','.join(missing_outputs)}"
+        elif expected and not published:
+            blocked = True
+            error = error or "missing_expected_artifacts"
+        elif expected and criteria and not evidence:
+            blocked = True
+            error = error or "missing_acceptance_evidence"
+
         result: dict[str, Any] = {
             "outcome": "BLOCKED" if blocked else "COMPLETED",
             "summary": (final_content if final_content is not None else (error or ""))[:20000],
             "verdict": "FAIL" if blocked else "PASS",
-            "artifact_refs": list(record.artifact_refs),
-            "acceptance_evidence": [],
+            "artifact_refs": published,
+            "acceptance_evidence": [] if blocked else evidence,
+            "published_paths": published_paths,
         }
         if blocked:
             result["blockers"] = [error or "blocked_by_model"]
@@ -540,6 +615,8 @@ class ApiAgentAdapter(AgentAdapter):
         auth: AuthContext,
         spec: dict[str, Any],
         call: dict[str, Any],
+        *,
+        wall_deadline: float | None = None,
     ) -> dict[str, Any]:
         function = call.get("function") or {}
         raw_name = str(function.get("name") or call.get("name") or "")
@@ -561,7 +638,9 @@ class ApiAgentAdapter(AgentAdapter):
         if self._broker is None:
             return {"status": "error", "error": "broker_unavailable", "tool": tool_name}
         if tool_name == "shell.run":
-            return self._dispatch_shell(record, auth, spec, parameters)
+            return self._dispatch_shell(
+                record, auth, spec, parameters, wall_deadline=wall_deadline
+            )
         if tool_name == "artifact.publish":
             return self._dispatch_publish(record, auth, spec, parameters)
         helper_name = _FS_HELPERS.get(tool_name)
@@ -572,9 +651,42 @@ class ApiAgentAdapter(AgentAdapter):
             return {"status": "error", "error": "unsupported_tool", "tool": tool_name}
         request = self._tool_request(record, spec, tool_name, parameters)
         try:
-            return dict(helper(auth, request) or {})
+            result = dict(helper(auth, request) or {})
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        if tool_name == "fs.read" and result.get("status") == "ok":
+            self._register_tool_read(record, auth, spec, parameters, result)
+        return result
+
+    def _register_tool_read(
+        self,
+        record: _RunRecord,
+        auth: AuthContext,
+        spec: dict[str, Any],
+        parameters: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        """Record an fs.read that entered the model as an immutable ContextAppend."""
+        path = str(parameters.get("path") or "")
+        digest = str(result.get("sha256") or "")
+        if not path or not digest:
+            return
+        try:
+            self._core.execute(
+                "context_append",
+                auth,
+                {
+                    "run_id": record.run_id,
+                    "task_id": spec.get("task_id") or record.task_id,
+                    "fencing_epoch": spec.get("fencing_epoch"),
+                    "reason": "tool_fs_read",
+                    "authorized_ref": path,
+                    "content_hash": digest,
+                    "materialized_hash": digest,
+                },
+            )
+        except Exception:  # noqa: BLE001 — audit best effort; tool result already returned
+            pass
 
     def _sandbox_for(self, spec: dict[str, Any]) -> Any:
         """A sandbox whose workspace mount is *this Run's* workspace (SPEC §11.1).
@@ -602,6 +714,8 @@ class ApiAgentAdapter(AgentAdapter):
         auth: AuthContext,
         spec: dict[str, Any],
         parameters: dict[str, Any],
+        *,
+        wall_deadline: float | None = None,
     ) -> dict[str, Any]:
         request = self._tool_request(record, spec, "shell.run", parameters)
         decision = self._broker.authorize(auth, request)
@@ -616,14 +730,62 @@ class ApiAgentAdapter(AgentAdapter):
             # Hand the run's stop event to the sandbox so a Pause/Cancel kills the
             # container immediately instead of waiting for the command's wall clock.
             command["cancel_event"] = record.stop_event
+            # Remaining Run wall budget must constrain this tool call.
+            if wall_deadline is not None:
+                remaining = max(wall_deadline - time.monotonic(), 0.0)
+                if remaining <= 0:
+                    self._finish_invocation(
+                        auth, decision, "error", {"error": "run_wall_timeout_exceeded"}
+                    )
+                    return {"status": "error", "error": "run_wall_timeout_exceeded"}
+                existing = command.get("timeout_s")
+                capped = int(max(1, remaining))
+                if existing is None:
+                    command["timeout_s"] = capped
+                else:
+                    command["timeout_s"] = min(int(existing), capped)
             result = dict(sandbox.execute(command) or {})
         except Exception as exc:  # noqa: BLE001
             detail = f"{type(exc).__name__}: {exc}"
             self._finish_invocation(auth, decision, "error", {"error": detail})
             return {"status": "error", "error": detail}
+        container_id = result.get("container_id")
+        exit_confirmed = result.get("exit_confirmed", result.get("status") == "ok")
+        if container_id or exit_confirmed is False:
+            self._register_sandbox_identity(
+                record, auth, spec, container_id=container_id, exit_confirmed=bool(exit_confirmed)
+            )
+        if not exit_confirmed:
+            record.sandbox_exit_unconfirmed = True
+            if isinstance(container_id, str) and container_id:
+                record.last_container_id = container_id
         outcome = "ok" if result.get("status") == "ok" else str(result.get("status") or "error")
         self._finish_invocation(auth, decision, outcome, result)
         return result
+
+    def _register_sandbox_identity(
+        self,
+        record: _RunRecord,
+        auth: AuthContext,
+        spec: dict[str, Any],
+        *,
+        container_id: Any,
+        exit_confirmed: bool,
+    ) -> None:
+        try:
+            self._core.execute(
+                "register_sandbox_identity",
+                auth,
+                {
+                    "run_id": record.run_id,
+                    "task_id": spec.get("task_id") or record.task_id,
+                    "fencing_epoch": spec.get("fencing_epoch"),
+                    "container_id": container_id,
+                    "exit_confirmed": exit_confirmed,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _dispatch_publish(
         self,
@@ -753,8 +915,11 @@ class ApiAgentAdapter(AgentAdapter):
         criteria = list(spec.get("acceptance_criteria") or [])
         if criteria:
             lines.append("Acceptance criteria: " + json.dumps(criteria, default=str))
+        materialized = _materialized_mandatory_texts(self._core, auth, run_id or str(spec.get("run_id") or ""))
+        if materialized:
+            lines.append("Authorized context:\n" + "\n".join(materialized))
         appends = _context_append_texts(
-            self._core, auth, str(spec.get("run_id") or ""), run_input.get("workspace_path")
+            self._core, auth, str(spec.get("run_id") or run_id or ""), run_input.get("workspace_path")
         )
         if appends:
             lines.append("Appended context:\n" + "\n".join(appends))
@@ -896,47 +1061,64 @@ def _sandbox_command(parameters: dict[str, Any]) -> dict[str, Any]:
     return command_spec
 
 
+def _materialized_mandatory_texts(core: Any, auth: Any, run_id: str) -> list[str]:
+    """Include Manifest-declared required inputs as concrete text, not only a hash."""
+    if not run_id or auth is None:
+        return []
+    try:
+        ctx = core.get_run_context(auth, run_id)
+    except Exception:  # noqa: BLE001
+        return []
+    texts: list[str] = []
+    if ctx.get("manifest_hash"):
+        texts.append(f"[manifest {ctx.get('manifest_id')} sha256={ctx['manifest_hash']}]")
+    for item in ctx.get("materialized") or []:
+        body = item.get("text")
+        if not body:
+            texts.append(
+                f"[{item.get('kind')}] {item.get('ref')} sha256={item.get('hash')} (unavailable)"
+            )
+            continue
+        texts.append(
+            f"[{item.get('kind')}] {item.get('ref')} sha256={item.get('hash')}\n{body}"
+        )
+    return texts
+
+
 def _context_append_texts(
     core: Any, auth: Any, run_id: str, workspace_path: str | None
 ) -> list[str]:
     """Read the Run's admitted context so the worker prompt matches the audit record.
 
-    The initial manifest is summarized by hash; every ``ContextAppend`` is read from
-    the source the Core authorized (workspace-relative file or the immutable artifact
-    store) and labeled with the reason and provenance that were recorded.
+    Every ``ContextAppend`` is read through Core authorization: ``artifact://`` URIs
+    must be Task-owned digests, and workspace files must still match the recorded
+    hash — mutated files are refused rather than re-labeled under a stale digest.
     """
+    del workspace_path  # reads go through Core; local path open is no longer used
     try:
         ctx = core.get_run_context(auth, run_id)
     except Exception:  # noqa: BLE001 — context is best effort, never fatal
         return []
     texts: list[str] = []
-    if ctx.get("manifest_hash"):
-        texts.append(f"[manifest {ctx.get('manifest_id')} sha256={ctx['manifest_hash']}]")
-    workspace_root = Path(workspace_path) if workspace_path else None
     for append in ctx.get("appends") or []:
-        ref = str(append.get("authorized_ref") or "")
         reason = append.get("reason") or "append"
-        body: str | None = None
-        if ref.startswith("artifact://"):
-            try:
-                body = core._artifact_store().get(ref).decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                body = None
-        elif workspace_root is not None and ref and not ref.startswith(
-            ("task:", "contract:", "plan:", "run:", "msg:")
-        ):
-            try:
-                from hibiki.tools.paths import WorkspacePaths
-
-                with WorkspacePaths(workspace_root) as paths:
-                    body = paths.open_for_read(ref).read().decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                body = None
-        if body is None:
+        ref = str(append.get("authorized_ref") or "")
+        try:
+            materialize = getattr(core, "materialize_context_append", None)
+            if materialize is None:
+                texts.append(f"[{reason}] {ref} (unavailable)")
+                continue
+            loaded = materialize(auth, run_id, append)
+        except Exception:  # noqa: BLE001
             texts.append(f"[{reason}] {ref} (unavailable)")
             continue
-        digest = append.get("materialized_hash") or ""
-        texts.append(f"[{reason}] {ref} sha256={digest}\n{body}")
+        if not loaded.get("ok"):
+            texts.append(
+                f"[{reason}] {ref} (unavailable:{loaded.get('error') or 'refused'})"
+            )
+            continue
+        digest = loaded.get("materialized_hash") or append.get("materialized_hash") or ""
+        texts.append(f"[{reason}] {ref} sha256={digest}\n{loaded.get('content')}")
     return texts
 
 

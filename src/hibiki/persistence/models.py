@@ -254,6 +254,10 @@ class AgentRunRow(Base):
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
     late_arrival: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Last known sandbox container id for this Run (M1 stop/reconcile confirmation).
+    sandbox_container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # True when a stop was requested but container exit could not be confirmed.
+    sandbox_exit_unconfirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class ActiveExecuteRunMarker(Base):

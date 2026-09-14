@@ -293,7 +293,13 @@ def run_once(
             "task_id": internal_task_id,
             "objective": spec["objective"],
             "nodes": [
-                {"work_unit_id": wu_id, "spec_version": 1, "work_type": "EXECUTE"},
+                {
+                    "work_unit_id": wu_id,
+                    "spec_version": 1,
+                    "work_type": "EXECUTE",
+                    "expected_outputs": list(spec.get("expected_artifacts") or []),
+                    "acceptance_criteria": list(spec.get("acceptance_criteria") or []),
+                },
             ],
             "edges": [],
         },
@@ -371,6 +377,56 @@ def run_once(
         # A result that names hashes the Core never received bytes for is not a
         # verifiable delivery (§11.3 / §20.1).
         record["ok"] = False
+
+    expected = list(spec.get("expected_artifacts") or [])
+    record["expected_artifacts"] = expected
+    published_paths = {
+        str(a.get("source_path") or "")
+        for a in artifacts
+        if a.get("source_path")
+    }
+    result_paths = set((record.get("result") or {}).get("published_paths") or [])
+    published_paths |= {p for p in result_paths if p}
+    missing = [name for name in expected if name not in published_paths]
+    record["missing_expected_artifacts"] = missing
+    if missing:
+        record["ok"] = False
+
+    evidence = list(((record.get("result") or {}).get("acceptance_evidence")) or [])
+    record["acceptance_evidence"] = evidence
+    required_criteria = [
+        c
+        for c in (spec.get("acceptance_criteria") or [])
+        if isinstance(c, dict) and c.get("required", True)
+    ]
+    if required_criteria and record.get("ok"):
+        covered = {str(item.get("criterion_id")) for item in evidence if item.get("criterion_id")}
+        missing_criteria = [
+            str(c["criterion_id"])
+            for c in required_criteria
+            if str(c["criterion_id"]) not in covered
+        ]
+        record["missing_acceptance_evidence"] = missing_criteria
+        if missing_criteria:
+            record["ok"] = False
+
+    if record.get("ok"):
+        prep = svc.execute(
+            "prepare_acceptance",
+            auth,
+            {"task_id": internal_task_id},
+        )
+        record["prepare_acceptance"] = {
+            "ok": prep.ok,
+            "error_code": prep.error_code,
+            "error_message": prep.error_message,
+            "data": prep.data if prep.ok else None,
+        }
+        if not prep.ok:
+            record["ok"] = False
+    else:
+        record["prepare_acceptance"] = None
+
     record["task_state"] = svc.get_task(internal_task_id)["state"]
     record["model_calls_used"] = svc.get_task(internal_task_id)["model_calls_used"]
     record["internal_task_id"] = internal_task_id

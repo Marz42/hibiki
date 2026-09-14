@@ -23,6 +23,7 @@ INTERNAL_ONLY_OPS = frozenset(
     {
         "submit_result",
         "set_writer_alive",
+        "register_sandbox_identity",
         "heartbeat",
         "publish_artifact",
         "context_append",

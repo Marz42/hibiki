@@ -314,6 +314,16 @@ class ApplicationService:
                 ).all()
                 for run in runs:
                     insp = self.agent_adapter.inspect(run.run_id)
+                    container_alive = self._sandbox_container_alive(run)
+                    if run.sandbox_exit_unconfirmed or container_alive:
+                        if run.workspace_id:
+                            ws = session.get(WorkspaceRow, run.workspace_id)
+                            if ws:
+                                ws.state = WorkspaceState.QUARANTINED
+                                ws.writer_alive = True
+                                notes.append(f"quarantine_unconfirmed:{ws.workspace_id}")
+                        # Never release a workspace while a sandbox exit is unconfirmed.
+                        continue
                     if run.status == AgentRunStatus.RUNNING and not insp.get("alive"):
                         run.status = AgentRunStatus.LOST
                         run.terminal_reason = "process_missing"
@@ -400,6 +410,7 @@ class ApplicationService:
             "open_blocking_gate": self._open_blocking_gate,
             "record_model_usage": self._record_model_usage,
             "set_writer_alive": self._set_writer_alive,
+            "register_sandbox_identity": self._register_sandbox_identity,
             "heartbeat": self._heartbeat,
             "publish_artifact": self._publish_artifact,
             "context_append": self._context_append,
@@ -460,7 +471,13 @@ class ApplicationService:
     def _authorize_run_command(
         self, session: Session, operation: str, auth: AuthContext, payload: dict[str, Any]
     ) -> None:
-        if operation not in {"submit_result", "heartbeat", "set_writer_alive", "confirm_run_exit"}:
+        if operation not in {
+            "submit_result",
+            "heartbeat",
+            "set_writer_alive",
+            "confirm_run_exit",
+            "register_sandbox_identity",
+        }:
             return
         run_id = payload.get("run_id")
         if operation == "set_writer_alive":
@@ -1573,6 +1590,13 @@ class ApplicationService:
         # Plan change invalidates pending final-acceptance snapshots
         self._supersede_pending_acceptance(session, task.task_id)
 
+        raw_by_id = {
+            str(item.get("work_unit_id")): item
+            for item in raw_nodes
+            if isinstance(item, dict) and item.get("work_unit_id")
+        }
+        contract_content = json.loads(contract.content_json)
+
         for n in nodes:
             # Task isolation: reject Work Units owned by another Task
             any_spec = session.scalars(
@@ -1590,13 +1614,17 @@ class ApplicationService:
                     code="cross_task_work_unit",
                 )
 
+            n_raw = raw_by_id.get(n.work_unit_id) or {}
             spec = {
                 "objective": payload.get("objective") or task.title,
                 "work_type": n.work_type,
                 "context_policy": "FRESH",
                 "input_refs": [],
-                "expected_outputs": [],
-                "acceptance_criteria": [],
+                "expected_outputs": list(n_raw.get("expected_outputs") or []),
+                "acceptance_criteria": list(
+                    n_raw.get("acceptance_criteria")
+                    or (contract_content.get("acceptance_criteria") or [])
+                ),
                 "required_capabilities": [],
                 "requested_permissions": [],
                 "workspace_policy": "dedicated",
@@ -2067,6 +2095,35 @@ class ApplicationService:
             if self.workspace_root and workspace_id
             else None
         )
+        contract_row = session.scalars(
+            select(ContractRow)
+            .where(
+                ContractRow.task_id == task.task_id,
+                ContractRow.contract_version == task.contract_version,
+            )
+            .order_by(ContractRow.contract_version.desc())
+        ).first()
+        contract_content: dict[str, Any] = (
+            json.loads(contract_row.content_json) if contract_row is not None else {}
+        )
+        expected_outputs = tuple(
+            str(item)
+            for item in (
+                wu_content.get("expected_outputs")
+                or contract_content.get("expected_outputs")
+                or []
+            )
+            if item
+        )
+        acceptance_criteria = tuple(
+            dict(item)
+            for item in (
+                wu_content.get("acceptance_criteria")
+                or contract_content.get("acceptance_criteria")
+                or []
+            )
+            if isinstance(item, dict)
+        )
         return RunExecutionSpec(
             run_id=run_id,
             task_id=task.task_id,
@@ -2096,6 +2153,8 @@ class ApplicationService:
             work_type=str(wu_content.get("work_type") or ""),
             goal_label=str(wu_content.get("work_type") or wu_objective),
             context_policy=str(wu_content.get("context_policy") or "FRESH"),
+            expected_outputs=expected_outputs,
+            acceptance_criteria=acceptance_criteria,
             metadata={
                 "unknown_ceiling_tools": unknown_tools,
                 "resource_limits": resource_limits,
@@ -2197,17 +2256,16 @@ class ApplicationService:
             )
 
         # Fixed inputs from upstream work: dependency results the Run may rely on.
+        # Edges are from prerequisite → dependent (``to`` is the current Work Unit).
         dependency_refs: list[dict[str, Any]] = []
         for edge in _json_list(plan.edges_json, None) if plan is not None else []:
-            dep_id = edge.get("from_work_unit_id") or edge.get("from")
-            if dep_id != wu_id:
+            to_id = edge.get("to_work_unit_id") or edge.get("to")
+            if to_id != wu_id:
                 continue
-            upstream = session.scalars(
-                select(WorkUnitExecutionRow).where(
-                    WorkUnitExecutionRow.work_unit_id == edge.get("to_work_unit_id")
-                    or WorkUnitExecutionRow.work_unit_id == edge.get("to")
-                )
-            ).first()
+            from_id = edge.get("from_work_unit_id") or edge.get("from")
+            if not from_id:
+                continue
+            upstream = session.get(WorkUnitExecutionRow, from_id)
             if upstream is None or not upstream.selected_result_ref:
                 continue
             dependency_refs.append(
@@ -2299,7 +2357,23 @@ class ApplicationService:
         run_input = session.get(RunInputRow, run.run_id)
         # A workspace-relative ref must resolve inside this Run's own workspace; the
         # bytes are hashed here so the append cannot claim content it did not read.
-        if run_input is not None and _looks_like_relative_path(ref):
+        # An ``artifact://`` ref must be a SHA-256 digest owned by this Task with
+        # content already held by the Core — never a path suffix into the store.
+        if ref.startswith("artifact://"):
+            try:
+                content, digest = self._read_task_artifact_bytes(session, task.task_id, ref)
+            except (PreconditionError, NotFoundError, ValueError) as exc:
+                raise PreconditionError(
+                    f"context artifact ref refused: {exc}", code="context_ref_refused"
+                ) from exc
+            if content_hash_value is not None and str(content_hash_value) != digest:
+                raise ConflictError(
+                    "context ref hash mismatch", code="context_hash_mismatch"
+                )
+            content_hash_value = digest
+            materialized = digest
+            size_bytes = len(content)
+        elif run_input is not None and _looks_like_relative_path(ref):
             try:
                 content, digest = self._read_workspace_bytes(
                     session, run, ref, workspace_id=run_input.workspace_id
@@ -2382,11 +2456,18 @@ class ApplicationService:
                 .where(ContextAppendRow.run_id == run_id)
                 .order_by(ContextAppendRow.sequence_no)
             ).all()
+            try:
+                materialized = self._materialize_mandatory_context(
+                    session, run.task_id, manifest
+                )
+            except Exception:  # noqa: BLE001 — never block context reads on materialization
+                materialized = []
             return {
                 "run_id": run_id,
                 "manifest_id": manifest.context_manifest_id if manifest else None,
                 "manifest_hash": manifest.manifest_hash if manifest else None,
                 "manifest": json.loads(manifest.content_json) if manifest else None,
+                "materialized": materialized,
                 "appends": [
                     {
                         "sequence_no": a.sequence_no,
@@ -3831,6 +3912,37 @@ class ApplicationService:
             }
         )
 
+    def _register_sandbox_identity(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Persist the Run↔container binding used by stop and reconcile confirmation."""
+        run = session.get(AgentRunRow, payload["run_id"])
+        if run is None:
+            raise NotFoundError("run not found", code="run_not_found")
+        self._assert_run_write_binding(session, auth, run, payload)
+        container_id = payload.get("container_id")
+        if container_id is not None:
+            container_id = str(container_id).strip() or None
+        if container_id is not None:
+            run.sandbox_container_id = container_id
+        if "exit_confirmed" in payload:
+            confirmed = bool(payload.get("exit_confirmed"))
+            run.sandbox_exit_unconfirmed = not confirmed
+            if not confirmed and run.workspace_id:
+                ws = session.get(WorkspaceRow, run.workspace_id)
+                if ws is not None:
+                    ws.state = WorkspaceState.QUARANTINED
+                    ws.writer_alive = True
+            elif confirmed:
+                run.sandbox_exit_unconfirmed = False
+        return CommandResult.success(
+            {
+                "run_id": run.run_id,
+                "sandbox_container_id": run.sandbox_container_id,
+                "sandbox_exit_unconfirmed": run.sandbox_exit_unconfirmed,
+            }
+        )
+
     def _heartbeat(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
@@ -4751,6 +4863,171 @@ class ApplicationService:
         if self._artifacts is None:
             raise PreconditionError("artifact store not configured", code="artifact_store_missing")
         return self._artifacts
+
+    def _sandbox_container_alive(self, run: AgentRunRow) -> bool:
+        """True when a persisted sandbox container is still running (or unconfirmable)."""
+        if run.sandbox_exit_unconfirmed:
+            return True
+        container_id = run.sandbox_container_id
+        if not container_id:
+            return False
+        sandbox = getattr(self, "sandbox_adapter", None) or getattr(self, "_sandbox", None)
+        inspect_fn = getattr(sandbox, "inspect_container", None)
+        if callable(inspect_fn):
+            probe = inspect_fn(container_id)
+            return bool(probe.get("running"))
+        # Fall back to a direct docker inspect when the adapter has no probe.
+        from hibiki.tools.sandbox import DockerSandboxAdapter
+
+        probe = DockerSandboxAdapter(None).inspect_container(container_id)  # type: ignore[arg-type]
+        return bool(probe.get("running"))
+
+    def _read_task_artifact_bytes(
+        self, session: Session, task_id: str, uri: str
+    ) -> tuple[bytes, str]:
+        """Load artifact bytes only when the URI is a digest owned by this Task."""
+        from hibiki.runtime.artifacts import artifact_digest
+
+        try:
+            digest = artifact_digest(uri)
+        except ValueError as exc:
+            raise PreconditionError(str(exc), code="artifact_uri_invalid") from exc
+        row = session.get(ArtifactRow, {"task_id": task_id, "artifact_hash": digest})
+        if row is None or not row.artifact_uri:
+            raise NotFoundError(
+                "artifact not registered for this task", code="artifact_not_owned"
+            )
+        if row.artifact_uri != f"artifact://{digest}":
+            raise PreconditionError(
+                "registered artifact uri does not match digest",
+                code="artifact_uri_mismatch",
+            )
+        content = self._artifact_store().get(f"artifact://{digest}")
+        actual = hashlib.sha256(content).hexdigest()
+        if actual != digest:
+            raise ConflictError(
+                "artifact content hash mismatch", code="artifact_hash_mismatch"
+            )
+        return content, digest
+
+    def _materialize_mandatory_context(
+        self,
+        session: Session,
+        task_id: str,
+        manifest: ContextManifestRow | None,
+    ) -> list[dict[str, Any]]:
+        """Turn Manifest refs into concrete text the worker may put in its prompt."""
+        if manifest is None:
+            return []
+        body = json.loads(manifest.content_json)
+        out: list[dict[str, Any]] = []
+        for ref in body.get("mandatory_refs") or []:
+            kind = ref.get("kind")
+            entry: dict[str, Any] = {
+                "kind": kind,
+                "ref": ref.get("ref"),
+                "hash": ref.get("hash"),
+                "text": None,
+            }
+            if kind == "contract":
+                contract = session.scalars(
+                    select(ContractRow).where(
+                        ContractRow.task_id == task_id,
+                        ContractRow.contract_version == ref.get("version"),
+                    )
+                ).first()
+                if contract is not None and (
+                    not ref.get("hash") or contract.content_hash == ref.get("hash")
+                ):
+                    entry["text"] = contract.content_json
+                    entry["hash"] = contract.content_hash
+            elif kind == "plan":
+                plan = session.scalars(
+                    select(PlanRow).where(
+                        PlanRow.task_id == task_id,
+                        PlanRow.plan_version == ref.get("version"),
+                    )
+                ).first()
+                if plan is not None and (
+                    not ref.get("hash") or plan.content_hash == ref.get("hash")
+                ):
+                    entry["text"] = json.dumps(
+                        {
+                            "nodes": json.loads(plan.nodes_json),
+                            "edges": json.loads(plan.edges_json),
+                        },
+                        default=str,
+                    )
+                    entry["hash"] = plan.content_hash
+            elif kind == "deliverable":
+                entry["text"] = json.dumps(ref, default=str)
+            out.append(entry)
+        for dep in body.get("dependency_result_refs") or []:
+            digest = dep.get("hash")
+            text = None
+            if digest:
+                try:
+                    content, _ = self._read_task_artifact_bytes(
+                        session, task_id, f"artifact://{digest}"
+                    )
+                    text = content.decode("utf-8", errors="replace")
+                except (PreconditionError, NotFoundError, ConflictError, ValueError):
+                    text = None
+            out.append(
+                {
+                    "kind": "dependency_result",
+                    "ref": dep.get("ref"),
+                    "work_unit_id": dep.get("work_unit_id"),
+                    "hash": digest,
+                    "text": text,
+                }
+            )
+        return out
+
+    def materialize_context_append(
+        self, auth: AuthContext, run_id: str, append: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Read one ContextAppend's bytes through Core authorization + hash check.
+
+        Workspace files that no longer match ``materialized_hash`` are refused rather
+        than re-labeled under a stale hash (SPEC §10.3).
+        """
+
+        def _read(session: Session) -> dict[str, Any]:
+            run = session.get(AgentRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run not found", code="run_not_found")
+            self._assert_run_write_binding(
+                session, auth, run, {"run_id": run_id}, require_fencing=False
+            )
+            ref = str(append.get("authorized_ref") or "")
+            expected = str(append.get("materialized_hash") or append.get("content_hash") or "")
+            if ref.startswith("artifact://"):
+                content, digest = self._read_task_artifact_bytes(session, run.task_id, ref)
+            elif _looks_like_relative_path(ref):
+                content, digest = self._read_workspace_bytes(session, run, ref)
+            else:
+                return {
+                    "ok": False,
+                    "error": "unsupported_ref",
+                    "authorized_ref": ref,
+                }
+            if expected and digest != expected:
+                return {
+                    "ok": False,
+                    "error": "hash_mismatch",
+                    "authorized_ref": ref,
+                    "expected_hash": expected,
+                    "actual_hash": digest,
+                }
+            return {
+                "ok": True,
+                "authorized_ref": ref,
+                "materialized_hash": digest,
+                "content": content.decode("utf-8", errors="replace"),
+            }
+
+        return self.executor.run(_read)
 
     def _assert_workspace_accessible_by_run(
         self, session: Session, run: AgentRunRow, workspace_id: str
