@@ -777,10 +777,30 @@ class ApplicationService:
         if release_workspace and run.workspace_id:
             ws = session.get(WorkspaceRow, run.workspace_id)
             if ws and ws.owner_run_id == run.run_id:
-                ws.writer_alive = False
-                if ws.state != WorkspaceState.QUARANTINED:
+                if run.sandbox_exit_unconfirmed:
+                    # Execution outcome is unknown: keep the writer claim so a second
+                    # writer cannot corrupt a Workspace a live sandbox may still write.
+                    ws.writer_alive = True
+                    ws.state = WorkspaceState.QUARANTINED
+                else:
+                    ws.writer_alive = False
                     ws.state = WorkspaceState.READY
                     ws.owner_run_id = None
+
+    def _release_workspace_after_confirmed_exit(
+        self, session: Session, run: AgentRunRow
+    ) -> None:
+        """Restore this Run's Workspace once its sandbox exit is proven (SPEC §11.1).
+
+        Called on a definitive ``exit_confirmed`` so a normally-finished writer no
+        longer blocks downstream or parallel Work Units on the same Workspace.
+        """
+        ws = session.get(WorkspaceRow, run.workspace_id) if run.workspace_id else None
+        if ws is None or ws.owner_run_id != run.run_id:
+            return
+        ws.writer_alive = False
+        ws.state = WorkspaceState.READY
+        ws.owner_run_id = None
 
     def _adapter_may_be_alive(self, run_id: str | None) -> bool:
         if not run_id:
@@ -1576,7 +1596,18 @@ class ApplicationService:
             )
             for e in raw_edges
         ]
-        validate_dag(task_id=task.task_id, nodes=nodes, edges=edges)
+        validate_dag(
+            task_id=task.task_id,
+            nodes=nodes,
+            edges=edges,
+            # A fixed verification topology proposed before any Run has published
+            # bytes cannot name the digest yet; the caller must opt in explicitly and
+            # acceptance still proves the delivery is content-backed (SPEC §6.1).
+            require_verdict_artifact_hash=payload.get(
+                "require_verdict_artifact_hash", True
+            )
+            is not False,
+        )
 
         # H-033 / §6.1: refuse without destroying the prior ACTIVE plan. Cross-task
         # ownership and capacity caps must be checked *before* superseding.
@@ -4059,12 +4090,21 @@ class ApplicationService:
             confirmed = bool(payload.get("exit_confirmed"))
             run.sandbox_exit_unconfirmed = not confirmed
             if not confirmed and run.workspace_id:
+                # Pre-execution claim, not an uncertainty: the adapter registers a
+                # ``pending:...`` identity *before* the sandbox call returns, so this
+                # branch runs on every normal shell execution. Quarantining here made
+                # the Workspace permanently unschedulable, because the confirmed path
+                # only cleared the Run flag and never restored the state. Keep the
+                # writer claim instead; reconcile/stop still quarantine when a Run is
+                # actually unconfirmed at a terminal boundary.
                 ws = session.get(WorkspaceRow, run.workspace_id)
                 if ws is not None:
-                    ws.state = WorkspaceState.QUARANTINED
                     ws.writer_alive = True
             elif confirmed:
                 run.sandbox_exit_unconfirmed = False
+                # A definitive exit is the one event that proves the writer is gone,
+                # so hand the Workspace back for downstream/parallel Work Units.
+                self._release_workspace_after_confirmed_exit(session, run)
         return CommandResult.success(
             {
                 "run_id": run.run_id,
@@ -4409,15 +4449,33 @@ class ApplicationService:
             "checkpoint_ref": ps.checkpoint_ref,
             "checkpoint_version": ps.checkpoint_version,
             "last_consumed_message_seq": ps.last_consumed_message_seq,
-            "mandatory": mandatory,
-            "optional": [],
+            # Same keys as the EXECUTE manifest: the reader materializes
+            # ``mandatory_refs``/``dependency_result_refs``, so a PLAN manifest using
+            # the old ``mandatory``/``optional`` names silently materialized nothing
+            # and the Contract never reached the Planner's input.
+            "context_policy": "FRESH",
+            "profile_ref": "planner@v1",
+            "mandatory_refs": mandatory,
+            "optional_refs": [],
+            "excluded_categories": ["other_tasks", "human_session", "credentials"],
+            "dependency_result_refs": [],
+            "artifact_refs": [],
+            "project_context_refs": [],
+            "previous_run_ref": None,
             "context_budget": {
                 "max_materialized_bytes": _int_or(
                     resource_limits.get("context_max_materialized_bytes"),
                     DEFAULTS.context_max_materialized_bytes,
                 )
             },
-            "mandatory_bytes": 0,
+            "mandatory_bytes": _mandatory_context_bytes(
+                session,
+                mandatory,
+                [],
+                self.workspace_root,
+                None,
+                task.task_id,
+            ),
         }
         mh = content_hash(manifest)
         session.add(
@@ -4525,7 +4583,13 @@ class ApplicationService:
     def _advance_planner_checkpoint(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
-        """Persist checkpoint_ref and message cursor in one transaction (H-036 / §9.1)."""
+        """Persist checkpoint_ref and message cursor in one transaction (H-036 / §9.1).
+
+        Authorization is delegated to :meth:`_assert_planner_write_auth` rather than
+        re-implemented here: a local generation check alone let a revoked PLAN Run keep
+        writing checkpoints with the new generation, and let any caller write when no
+        active Run existed (that branch skipped the binding assertion entirely).
+        """
         task = self._get_task(session, payload["task_id"])
         session_id = task.active_planner_session_id or payload.get("planner_session_id")
         if not session_id:
@@ -4533,20 +4597,20 @@ class ApplicationService:
         ps = session.get(PlannerSessionRow, session_id)
         if ps is None or ps.task_id != task.task_id:
             raise NotFoundError("planner session not found", code="planner_session_not_found")
-        if int(payload.get("generation") or 0) != int(ps.generation):
-            return CommandResult.failure(
-                "stale_generation",
-                "stale planner generation",
-                data={"got": payload.get("generation"), "expected": ps.generation},
-            )
-        run_id = payload.get("run_id") or ps.active_run_id
-        if run_id:
-            run = session.get(AgentRunRow, run_id)
-            if run is None:
-                raise NotFoundError("run not found", code="run_not_found")
-            if run.assignment_kind != AssignmentKind.PLAN or run.planner_session_id != session_id:
-                raise PreconditionError("run is not the PLAN run", code="not_plan_run")
-            self._assert_run_write_binding(session, auth, run, payload)
+        try:
+            self._assert_planner_write_auth(session, auth, task, ps, payload)
+        except ConflictError as exc:
+            if exc.code == "stale_generation":
+                return CommandResult.failure(
+                    "stale_generation",
+                    "stale planner generation",
+                    data={
+                        "got": int(payload.get("generation") or 0),
+                        "expected": ps.generation,
+                        "task_id": task.task_id,
+                    },
+                )
+            raise
 
         consumed = int(payload.get("last_consumed_message_seq") or ps.last_consumed_message_seq)
         if consumed < int(ps.last_consumed_message_seq or 0):
@@ -5435,6 +5499,12 @@ class ApplicationService:
             rows = session.scalars(
                 select(WorkUnitExecutionRow).where(WorkUnitExecutionRow.task_id == task_id)
             ).all()
+            specs = {
+                (s.work_unit_id, int(s.spec_version)): s.work_type
+                for s in session.scalars(
+                    select(WorkUnitSpecRow).where(WorkUnitSpecRow.task_id == task_id)
+                ).all()
+            }
             return [
                 {
                     "work_unit_id": wu.work_unit_id,
@@ -5443,9 +5513,42 @@ class ApplicationService:
                     "verified_artifact_hash": wu.verified_artifact_hash,
                     "active_run_id": wu.active_run_id,
                     "blocked_reason": wu.blocked_reason,
+                    "spec_version": wu.spec_version,
+                    # Work Units are typed (EXECUTE / VERIFY / INTEGRATE / REPAIR);
+                    # acceptance must be able to require a real VERIFY.
+                    "work_type": specs.get((wu.work_unit_id, int(wu.spec_version))),
                 }
                 for wu in rows
             ]
+
+        return self.executor.run(_read)
+
+    def get_active_plan(self, task_id: str) -> dict[str, Any] | None:
+        """The currently ACTIVE Plan for a Task, with its nodes and edges.
+
+        Read-only acceptance input: completion must be judged against the final
+        revision, not every Work Unit row the Task ever accumulated.
+        """
+
+        def _read(session: Session) -> dict[str, Any] | None:
+            marker = session.get(ActivePlanMarker, task_id)
+            if marker is None:
+                return None
+            plan = session.scalars(
+                select(PlanRow).where(
+                    PlanRow.task_id == task_id,
+                    PlanRow.plan_version == marker.plan_version,
+                )
+            ).first()
+            if plan is None:
+                return None
+            return {
+                "task_id": task_id,
+                "plan_version": plan.plan_version,
+                "status": plan.status,
+                "nodes": _json_list(plan.nodes_json, None),
+                "edges": _json_list(plan.edges_json, None),
+            }
 
         return self.executor.run(_read)
 

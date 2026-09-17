@@ -27,7 +27,18 @@ def validate_dag(
     nodes: list[PlanNode],
     edges: list[PlanEdge],
     permission_ok: bool = True,
+    require_verdict_artifact_hash: bool = True,
 ) -> None:
+    """Validate a Plan DAG (SPEC §6.1).
+
+    ``require_verdict_artifact_hash`` defaults to the SPEC rule that a
+    ``VERDICT_PASS`` edge names the explicit Artifact hash it verifies. It may be
+    disabled only by a caller that cannot know a content digest yet — a fixed live
+    verification topology proposed before any Run has published bytes. The dependency
+    still requires ``status == DONE`` and ``selected_verdict == PASS``; only the extra
+    hash equality check is dropped, and the acceptance harness separately proves the
+    delivery is content-backed.
+    """
     if not nodes:
         raise PreconditionError("plan must contain at least one node", code="plan_empty")
     ids = [n.work_unit_id for n in nodes]
@@ -37,7 +48,11 @@ def validate_dag(
     for e in edges:
         if e.from_work_unit_id not in id_set or e.to_work_unit_id not in id_set:
             raise PreconditionError("dangling plan edge", code="plan_dangling_edge")
-        if e.predicate == DependencyPredicate.VERDICT_PASS and not e.artifact_hash:
+        if (
+            require_verdict_artifact_hash
+            and e.predicate == DependencyPredicate.VERDICT_PASS
+            and not e.artifact_hash
+        ):
             raise PreconditionError(
                 "VERDICT_PASS requires artifact_hash",
                 code="plan_missing_artifact_hash",

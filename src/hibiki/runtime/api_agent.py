@@ -23,12 +23,15 @@ The adapter never reads ``os.environ``: the model client is injected by the call
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from hibiki.domain.defaults import DEFAULTS
 from hibiki.domain.enums import ActorType
 from hibiki.domain.ports import AgentAdapter
 from hibiki.domain.types import AuthContext
@@ -103,52 +106,198 @@ _TOOL_PARAMETERS: dict[str, dict[str, Any]] = {
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a bounded execution worker. Use only the tools you were granted, keep "
-    "every path inside the workspace, and stop when the objective is met. Finish with "
-    "a plain final message and no tool calls. If the objective cannot be completed, "
-    "include the marker [[HIBIKI:BLOCKED]] in your final message."
+    "every path inside the workspace, and stop when the objective is met. When you "
+    "publish a deliverable, finish with a JSON object containing "
+    '{"outcome":"COMPLETED","verdict":"PASS"|"FAIL","acceptance_evidence":'
+    '[{"criterion_id":"<id>","artifact_hash":"<sha256 you published>",'
+    '"verdict":"PASS"|"FAIL"}]} so the result is auditable; a VERIFY unit reports '
+    "FAIL in that same shape. Finish with no tool calls. If the objective cannot be "
+    "completed, include the marker [[HIBIKI:BLOCKED]] in your final message."
 )
 
 _BLOCKED_MARKER = "[[HIBIKI:BLOCKED]]"
 _FAIL_MARKER = "[[HIBIKI:FAIL]]"
 _PASS_MARKER = "[[HIBIKI:PASS]]"
 
+#: Cues that invert a marker mention instead of asserting it. A model that ends with
+#: "[[HIBIKI:BLOCKED]] is not applicable" delivered successfully; treating the bare
+#: substring as a block marker made a complete delivery report BLOCKED/FAIL.
+#: Matched as whole tokens: the substring "not" inside "cannot continue" is an
+#: assertion, not a negation of the marker.
+_NEGATION_CUES = ("n't", "never", "cannot", "can't", "without", "no", "not")
+#: Cues consulted *before* the marker. Deliberately empty: every candidate is
+#: ambiguous in that position ("cannot continue [[HIBIKI:BLOCKED]]" asserts the block,
+#: while "without a path [[HIBIKI:BLOCKED]]" does too). Negation is recognized only
+#: through the unambiguous negation+head pair that follows the marker.
+_PRE_MARKER_CUES: tuple[str, ...] = ()
+_PRE_MARKER_RE = re.compile(
+    r"(?<![a-z])(" + "|".join(re.escape(c) for c in _PRE_MARKER_CUES) + r")(?![a-z])"
+    if _PRE_MARKER_CUES
+    else r"(?!)"
+)
+
+#: Heads that turn a nearby negation into "this marker does not apply". Deliberately
+#: excludes generic words such as "because", and "blocking" ("blocking reason" is how a
+#: genuine block report reads and must stay asserted).
+_NEGATION_HEADS = ("applicable", "needed", "required", "relevant")
+
+#: "X] is not applicable" / "X] not needed": the negation may follow the marker.
+_POST_MARKER_NEGATION = re.compile(
+    r"\][^.\n]{0,40}\b(?:is|was|are|were|isn't|wasn't)?\s*(?:not\s+|no\s+)?"
+    r"(?P<head>" + "|".join(_NEGATION_HEADS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _marker_is_negated(text: str, index: int) -> bool:
+    """True when the marker at ``index`` is discussed rather than asserted.
+
+    Models routinely close with "[[HIBIKI:BLOCKED]] is not applicable" *after*
+    delivering everything, so the negation may follow the marker as well as precede it.
+    """
+    before = text[max(0, index - 60) : index]
+    # A previous marker token is not part of this mention's context.
+    cut = before.rfind("[[HIBIKI:")
+    if cut != -1:
+        before = before[:cut]
+    lowered = before.lower()
+    # Only the clause containing the marker counts, so an unrelated earlier negation
+    # cannot excuse a genuine marker.
+    for separator in (". ", ".\n", "! ", "? ", "; ", "\n", "."):
+        position = lowered.rfind(separator)
+        if position != -1:
+            lowered = lowered[position + len(separator) :]
+    # Immediately before: "this is not blocked".
+    if _PRE_MARKER_RE.search(lowered):
+        return True
+    # Immediately after: "X] is not applicable" / "X] not needed".
+    return _POST_MARKER_NEGATION.search(text[index : index + 80]) is not None
+
+
+def _marker_verdict(text: str) -> str | None:
+    """The asserted marker verdict, ignoring a marker the reply merely negates."""
+    for index, token in enumerate((_FAIL_MARKER, _PASS_MARKER)):
+        start = text.find(token)
+        while start != -1:
+            if not _marker_is_negated(text, start):
+                # A bare ``[[HIBIKI:PASS]]`` is itself the complete mention.
+                return "FAIL" if index == 0 else "PASS"
+            start = text.find(token, start + 1)
+    return None
+
+
+def _asserted_blocked(text: str) -> bool:
+    """True when the reply actually asserts ``[[HIBIKI:BLOCKED]]``."""
+    start = text.find(_BLOCKED_MARKER)
+    while start != -1:
+        if not _marker_is_negated(text, start):
+            return True
+        start = text.find(_BLOCKED_MARKER, start + 1)
+    return False
+
+
+def _json_object_candidates(text: str) -> list[str]:
+    """Return complete top-level ``{...}`` substrings, outermost-first, last-first.
+
+    Scanning from the end finds the object a chatty model *meant* as its structured
+    verdict, while requiring brace depth to return to zero drops trailing prose. A
+    naive ``rfind("{")`` instead starts inside the deepest nested object (for example
+    ``acceptance_evidence[0]``) and silently discards every sibling field.
+    """
+    candidates: list[str] = []
+    depth = 0
+    start: int | None = None
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidates.append(text[start : index + 1])
+                    start = None
+    candidates.reverse()
+    return candidates
+
+
+def _valid_evidence_items(raw: Any) -> list[dict[str, Any]]:
+    """Keep only well-formed evidence objects so a bad entry cannot fake a verdict."""
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _payload_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Recognized result fields from one decoded JSON object (possibly empty)."""
+    fields: dict[str, Any] = {}
+    if payload.get("verdict") in {"PASS", "FAIL"}:
+        fields["verdict"] = str(payload["verdict"])
+    if payload.get("outcome") in {"COMPLETED", "BLOCKED"}:
+        fields["outcome"] = str(payload["outcome"])
+    if isinstance(payload.get("acceptance_evidence"), list):
+        # An explicitly empty array is still authoritative: it records "no evidence".
+        fields["acceptance_evidence"] = _valid_evidence_items(payload["acceptance_evidence"])
+    return fields
+
 
 def _parse_explicit_result(final_content: str | None) -> dict[str, Any]:
-    """Extract structured COMPLETED/FAIL|PASS fields from the model reply if present."""
+    """Extract structured COMPLETED/FAIL|PASS fields from the model reply if present.
+
+    A reply may carry a full JSON object, a fenced ```json block, or prose around one.
+    Only a *complete* top-level object is trusted; truncated or nested fragments must
+    never be reported as a verdict, because a PASS with dropped evidence reads as
+    success and skips the acceptance check (SPEC §17 / §20.1).
+    """
     if not final_content:
         return {}
-    out: dict[str, Any] = {}
-    if _FAIL_MARKER in final_content:
-        out["verdict"] = "FAIL"
-        out.setdefault("outcome", "COMPLETED")
-    elif _PASS_MARKER in final_content:
-        out["verdict"] = "PASS"
-        out.setdefault("outcome", "COMPLETED")
-    # Prefer a trailing JSON object when the model emits one.
     text = final_content.strip()
-    start = text.rfind("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
+    out: dict[str, Any] = {}
+    evidence_only: dict[str, Any] | None = None
+    saw_json_object = False
+    for candidate in _json_object_candidates(text):
+        saw_json_object = True
         try:
-            payload = json.loads(text[start : end + 1])
+            payload = json.loads(candidate)
         except (TypeError, ValueError, json.JSONDecodeError):
-            payload = None
-        if isinstance(payload, dict):
-            if payload.get("verdict") in {"PASS", "FAIL"}:
-                out["verdict"] = str(payload["verdict"])
-            if payload.get("outcome") in {"COMPLETED", "BLOCKED"}:
-                out["outcome"] = str(payload["outcome"])
-            if isinstance(payload.get("acceptance_evidence"), list):
-                out["acceptance_evidence"] = payload["acceptance_evidence"]
-    # Common free-text patterns when JSON is absent.
-    lowered = text.lower()
-    if "verdict" in out:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        # A nested fragment parses as a dict but carries no recognized field.
+        fields = _payload_fields(payload)
+        if not fields:
+            continue
+        if "verdict" in fields or "outcome" in fields:
+            out.update(fields)
+            return out
+        evidence_only = fields
+    if evidence_only is not None:
+        out.update(evidence_only)
         return out
-    if '"verdict": "fail"' in lowered or '"verdict":"fail"' in lowered:
-        out["verdict"] = "FAIL"
-        out.setdefault("outcome", "COMPLETED")
-    elif '"verdict": "pass"' in lowered or '"verdict":"pass"' in lowered:
-        out["verdict"] = "PASS"
+    if saw_json_object:
+        # The reply tried to be structured but no complete object was usable. Reporting
+        # a verdict scraped from its fragments would let a truncated PASS skip the
+        # acceptance check, so the caller must fall back to BLOCKED/FAIL instead.
+        return out
+    # No JSON object at all. Only the explicit markers count here: a JSON-shaped
+    # substring inside prose cannot be told apart from a truncated object, and a
+    # mis-read PASS skips the acceptance check, so ambiguity must not yield one.
+    marker = _marker_verdict(final_content)
+    if marker is not None:
+        out["verdict"] = marker
         out.setdefault("outcome", "COMPLETED")
     return out
 
@@ -198,8 +347,11 @@ class ApiAgentAdapter(AgentAdapter):
         sandbox: Any = None,
         workspace_root: str | None = None,
         system_prompt: str | None = None,
-        max_turns: int = 12,
-        max_model_calls: int = 40,
+        # Default to the SPEC §27 system ceilings. The Core already clamps every Run to
+        # these values, so a lower adapter default would silently override the Contract
+        # (a 12-turn cap masked a 30-turn spec ceiling and produced max_turns_exhausted).
+        max_turns: int = DEFAULTS.max_run_model_turns,
+        max_model_calls: int = DEFAULTS.max_task_model_calls,
         poll_interval_s: float = 0.05,
     ) -> None:
         self._client = client
@@ -407,6 +559,32 @@ class ApiAgentAdapter(AgentAdapter):
                     else:
                         record.status = "EXITED"
 
+    def _expected_but_unpublished(
+        self,
+        spec: dict[str, Any],
+        record: _RunRecord,
+        run_input: dict[str, Any],
+    ) -> list[str]:
+        """Expected outputs that exist in the Workspace but were never published.
+
+        Returns an empty list when nothing is outstanding, so the loop cannot nudge a
+        Run that simply has no deliverable to publish.
+        """
+        expected = [str(item) for item in (spec.get("expected_outputs") or []) if item]
+        if not expected:
+            return []
+        published = set(record.published_paths)
+        workspace = str(run_input.get("workspace_path") or "")
+        if not workspace:
+            return []
+        outstanding: list[str] = []
+        for name in expected:
+            if name in published or any(path.endswith(name) for path in published):
+                continue
+            if (Path(workspace) / name).is_file():
+                outstanding.append(name)
+        return outstanding
+
     def _loop(
         self,
         record: _RunRecord,
@@ -427,6 +605,7 @@ class ApiAgentAdapter(AgentAdapter):
         )
         final_content: str | None = None
         error: str | None = None
+        publish_retries = 0
 
         for _turn in range(turn_budget):
             if record.stop_event.is_set():
@@ -469,10 +648,35 @@ class ApiAgentAdapter(AgentAdapter):
             if record.stop_event.is_set():
                 return None, None
             if not reply.tool_calls:
-                final_content = reply.content or ""
-                if not final_content.strip():
+                text = reply.content or ""
+                if not text.strip():
                     # An empty completion is not a delivered result (SPEC §8.3).
                     error = "empty_model_completion"
+                    break
+                # A worker that finished without publishing a deliverable it already
+                # wrote has no verifiable delivery (SPEC §11.3): the file is real, yet
+                # the Run would report `missing_expected_artifacts`. Found live — spend
+                # one corrective turn instead of silently failing a completed unit.
+                if publish_retries < 1:
+                    unpublished = self._expected_but_unpublished(
+                        spec, record, run_input
+                    )
+                    if unpublished:
+                        publish_retries += 1
+                        messages.append(
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Your deliverable exists on disk but was never published, "
+                                    "so it cannot count as evidence. Call artifact.publish "
+                                    "for: "
+                                    + ", ".join(unpublished)
+                                    + ". Then reply with your final summary."
+                                ),
+                            )
+                        )
+                        continue
+                final_content = text
                 break
             for call in reply.tool_calls:
                 if record.stop_event.is_set():
@@ -548,7 +752,7 @@ class ApiAgentAdapter(AgentAdapter):
         explicit = _parse_explicit_result(final_content)
 
         blocked = bool(error) or final_content is None
-        if final_content and _BLOCKED_MARKER in final_content:
+        if final_content and _asserted_blocked(final_content):
             blocked = True
         if missing_outputs:
             blocked = True
@@ -626,6 +830,12 @@ class ApiAgentAdapter(AgentAdapter):
             "artifact_refs": published,
             "acceptance_evidence": [] if (blocked and outcome != "COMPLETED") else evidence,
             "published_paths": published_paths,
+            # Record which marker vocabulary decided the outcome, so a stray mention in
+            # prose is auditable rather than an unexplained BLOCKED.
+            "marker": _marker_verdict(final_content) if final_content else None,
+            "blocked_marker_asserted": bool(
+                final_content and _asserted_blocked(final_content)
+            ),
         }
         if blocked:
             result["blockers"] = [error or "blocked_by_model"]
