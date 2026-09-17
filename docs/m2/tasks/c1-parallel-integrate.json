@@ -1,0 +1,27 @@
+{
+  "task_id": "m2-c1",
+  "title": "Parallel summarize + integrate + verify",
+  "objective": "Two workers summarize different attachments in parallel; integrate into one report; verify structure.",
+  "topology": {
+    "nodes": [
+      {"work_unit_id": "wu_left", "work_type": "EXECUTE", "spec_version": 1},
+      {"work_unit_id": "wu_right", "work_type": "EXECUTE", "spec_version": 1},
+      {"work_unit_id": "wu_integrate", "work_type": "INTEGRATE", "spec_version": 1},
+      {"work_unit_id": "wu_verify", "work_type": "VERIFY", "spec_version": 1}
+    ],
+    "edges": [
+      {"from_work_unit_id": "wu_left", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
+      {"from_work_unit_id": "wu_right", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
+      {
+        "from_work_unit_id": "wu_integrate",
+        "to_work_unit_id": "wu_verify",
+        "predicate": "VERDICT_PASS",
+        "artifact_hash": "PLACEHOLDER_INTEG"
+      }
+    ]
+  },
+  "inputs": {
+    "left": "docs/m2/fixtures/left.txt",
+    "right": "docs/m2/fixtures/right.txt"
+  }
+}

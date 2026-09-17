@@ -1,0 +1,23 @@
+{
+  "task_id": "m2-c3",
+  "title": "Convert two formats then integrate catalog",
+  "objective": "Convert two small files in parallel, integrate a catalog, verify hashes.",
+  "topology": {
+    "nodes": [
+      {"work_unit_id": "wu_conv1", "work_type": "EXECUTE", "spec_version": 1},
+      {"work_unit_id": "wu_conv2", "work_type": "EXECUTE", "spec_version": 1},
+      {"work_unit_id": "wu_integrate", "work_type": "INTEGRATE", "spec_version": 1},
+      {"work_unit_id": "wu_verify", "work_type": "VERIFY", "spec_version": 1}
+    ],
+    "edges": [
+      {"from_work_unit_id": "wu_conv1", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
+      {"from_work_unit_id": "wu_conv2", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
+      {
+        "from_work_unit_id": "wu_integrate",
+        "to_work_unit_id": "wu_verify",
+        "predicate": "VERDICT_PASS",
+        "artifact_hash": "PLACEHOLDER_INTEG"
+      }
+    ]
+  }
+}

@@ -28,13 +28,13 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-#: Schema generation this code writes and requires. M1 adds execution-boundary tables
-#: (run_inputs / tool_invocations / context_appends) on top of the frozen M0 schema.
-SCHEMA_VERSION = "m1"
+#: Schema generation this code writes and requires. M2 adds the task_messages log on
+#: top of the M1 execution-boundary schema.
+SCHEMA_VERSION = "m2"
 
 #: Schema generations this code can migrate from. A database recording one of these is
 #: upgraded; anything else is an unknown schema and startup is refused.
-KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"m0", SCHEMA_VERSION})
+KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"m0", "m1", SCHEMA_VERSION})
 
 
 def _alembic_revision(engine: Engine) -> str | None:

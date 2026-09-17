@@ -547,6 +547,25 @@ class ContextAppendRow(Base):
     )
 
 
+class TaskMessageRow(Base):
+    """Append-only Planner↔Worker collaboration messages (M2 §9.1 / §12.3)."""
+
+    __tablename__ = "task_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.task_id"), nullable=False, index=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    sender_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sender_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    body_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "sequence_no", name="uq_task_messages_seq"),
+    )
+
+
 def create_sqlite_engine(url: str = "sqlite:///hibiki.db") -> Engine:
     engine = create_engine(url, connect_args={"check_same_thread": False}, future=True)
 
@@ -566,7 +585,7 @@ def make_session_factory(engine: Engine) -> sessionmaker:
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
-def ensure_schema_version(engine: Engine, expected: str = "m1") -> None:
+def ensure_schema_version(engine: Engine, expected: str = "m2") -> None:
     with engine.connect() as conn:
         try:
             row = conn.execute(

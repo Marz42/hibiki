@@ -1,0 +1,48 @@
+{
+  "task_def": "m2-c3",
+  "task_id": "task_15f2f468802d4fd3",
+  "plan_version": 1,
+  "runs": [
+    {
+      "run_id": "run_701b895b5bd8440e",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "integ-m2-c3"
+        ],
+        "verified_artifact_refs": [
+          "integ-m2-c3"
+        ]
+      }
+    },
+    {
+      "run_id": "run_0bc00264e98e4da6",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "integ-m2-c3"
+        ],
+        "verified_artifact_refs": [
+          "integ-m2-c3"
+        ]
+      }
+    },
+    {
+      "run_id": "run_3c797703f37d4614",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "integ-m2-c3"
+        ],
+        "verified_artifact_refs": [
+          "integ-m2-c3"
+        ]
+      }
+    }
+  ],
+  "terminal": "COMPLETED",
+  "mode": "dry-run"
+}

@@ -1,0 +1,24 @@
+{
+  "task_id": "m2-c2",
+  "title": "Shared-repo dual edit then integrate with repair",
+  "objective": "Two workers edit different files; integrate; on conflict repair and re-verify.",
+  "topology": {
+    "nodes": [
+      {"work_unit_id": "wu_edit_a", "work_type": "EXECUTE", "spec_version": 1},
+      {"work_unit_id": "wu_edit_b", "work_type": "EXECUTE", "spec_version": 1},
+      {"work_unit_id": "wu_integrate", "work_type": "INTEGRATE", "spec_version": 1},
+      {"work_unit_id": "wu_verify", "work_type": "VERIFY", "spec_version": 1}
+    ],
+    "edges": [
+      {"from_work_unit_id": "wu_edit_a", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
+      {"from_work_unit_id": "wu_edit_b", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
+      {
+        "from_work_unit_id": "wu_integrate",
+        "to_work_unit_id": "wu_verify",
+        "predicate": "VERDICT_PASS",
+        "artifact_hash": "PLACEHOLDER_INTEG"
+      }
+    ]
+  },
+  "inject_fail_repair": true
+}

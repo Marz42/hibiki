@@ -33,6 +33,7 @@ from hibiki.domain.errors import (
     ConflictError,
     DomainError,
     IdempotencyConflictError,
+    InvalidTransitionError,
     NotFoundError,
     PreconditionError,
 )
@@ -61,6 +62,7 @@ from hibiki.persistence.models import (
     ActiveContractMarker,
     ActiveExecuteRunMarker,
     ActivePlanMarker,
+    ActivePlanRunMarker,
     AgentProfileRow,
     AgentRunRow,
     ArtifactRow,
@@ -79,6 +81,7 @@ from hibiki.persistence.models import (
     ResultSnapshotRow,
     RunInputRow,
     SideEffectRow,
+    TaskMessageRow,
     TaskRow,
     ToolInvocationRow,
     WorkspaceRow,
@@ -418,6 +421,12 @@ class ApplicationService:
             "replace_planner_generation": self._replace_planner_generation,
             "submit_plan_proposal": self._submit_plan_proposal,
             "apply_contract_delta": self._apply_contract_delta,
+            "dispatch_planner_run": self._dispatch_planner_run,
+            "advance_planner_checkpoint": self._advance_planner_checkpoint,
+            "post_task_message": self._post_task_message,
+            "request_spawn": self._request_spawn,
+            "close_planner_session": self._close_planner_session,
+            "request_repair_plan": self._request_repair_plan,
         }
         handler = handlers.get(operation)
         if handler is None:
@@ -745,6 +754,13 @@ class ApplicationService:
         *,
         release_workspace: bool = True,
     ) -> None:
+        if run.assignment_kind == AssignmentKind.PLAN and run.planner_session_id:
+            marker = session.get(ActivePlanRunMarker, run.planner_session_id)
+            if marker and marker.run_id == run.run_id:
+                session.delete(marker)
+            ps = session.get(PlannerSessionRow, run.planner_session_id)
+            if ps and ps.active_run_id == run.run_id:
+                ps.active_run_id = None
         if run.work_unit_id:
             marker = session.get(ActiveExecuteRunMarker, run.work_unit_id)
             if marker and marker.run_id == run.run_id:
@@ -1554,6 +1570,37 @@ class ApplicationService:
         ]
         validate_dag(task_id=task.task_id, nodes=nodes, edges=edges)
 
+        # H-033 / §6.1: refuse without destroying the prior ACTIVE plan. Cross-task
+        # ownership and capacity caps must be checked *before* superseding.
+        if len(nodes) > DEFAULTS.max_work_units_per_task:
+            raise PreconditionError(
+                f"plan exceeds max_work_units_per_task ({DEFAULTS.max_work_units_per_task})",
+                code="plan_work_unit_cap",
+            )
+        prior_versions = session.scalars(
+            select(func.count()).select_from(PlanRow).where(PlanRow.task_id == task.task_id)
+        ).one()
+        if int(prior_versions or 0) >= DEFAULTS.max_plan_revisions:
+            raise PreconditionError(
+                f"plan exceeds max_plan_revisions ({DEFAULTS.max_plan_revisions})",
+                code="plan_revision_cap",
+            )
+        for n in nodes:
+            any_spec = session.scalars(
+                select(WorkUnitSpecRow).where(WorkUnitSpecRow.work_unit_id == n.work_unit_id)
+            ).first()
+            if any_spec is not None and any_spec.task_id != task.task_id:
+                raise PreconditionError(
+                    f"work unit {n.work_unit_id} belongs to another task",
+                    code="cross_task_work_unit",
+                )
+            exec_existing = session.get(WorkUnitExecutionRow, n.work_unit_id)
+            if exec_existing is not None and exec_existing.task_id != task.task_id:
+                raise PreconditionError(
+                    f"work unit execution {n.work_unit_id} belongs to another task",
+                    code="cross_task_work_unit",
+                )
+
         now = self.clock.now()
         plan_version = (task.plan_version or 0) + 1
         plan_content = {"nodes": raw_nodes, "edges": raw_edges}
@@ -1596,25 +1643,11 @@ class ApplicationService:
             if isinstance(item, dict) and item.get("work_unit_id")
         }
         contract_content = json.loads(contract.content_json)
+        seen_workspaces: set[str] = set()
 
         for n in nodes:
-            # Task isolation: reject Work Units owned by another Task
-            any_spec = session.scalars(
-                select(WorkUnitSpecRow).where(WorkUnitSpecRow.work_unit_id == n.work_unit_id)
-            ).first()
-            if any_spec is not None and any_spec.task_id != task.task_id:
-                raise PreconditionError(
-                    f"work unit {n.work_unit_id} belongs to another task",
-                    code="cross_task_work_unit",
-                )
-            exec_existing = session.get(WorkUnitExecutionRow, n.work_unit_id)
-            if exec_existing is not None and exec_existing.task_id != task.task_id:
-                raise PreconditionError(
-                    f"work unit execution {n.work_unit_id} belongs to another task",
-                    code="cross_task_work_unit",
-                )
-
             n_raw = raw_by_id.get(n.work_unit_id) or {}
+            exec_existing = session.get(WorkUnitExecutionRow, n.work_unit_id)
             spec = {
                 "objective": payload.get("objective") or task.title,
                 "work_type": n.work_type,
@@ -1690,9 +1723,9 @@ class ApplicationService:
                             code="work_unit_spec_immutable",
                         )
 
-            ws_id = f"ws_{n.work_unit_id}"
+            ws_id = str(n_raw.get("workspace_id") or f"ws_{n.work_unit_id}")
             ws = session.get(WorkspaceRow, ws_id)
-            if ws is None:
+            if ws is None and ws_id not in seen_workspaces:
                 session.add(
                     WorkspaceRow(
                         workspace_id=ws_id,
@@ -1702,10 +1735,13 @@ class ApplicationService:
                         fencing_epoch=0,
                     )
                 )
-            elif ws.task_id != task.task_id:
+                seen_workspaces.add(ws_id)
+            elif ws is not None and ws.task_id != task.task_id:
                 raise PreconditionError(
                     "workspace belongs to another task", code="cross_task_workspace"
                 )
+            else:
+                seen_workspaces.add(ws_id)
 
         # Plan removal: tear down Work Units no longer in the active node set (§6)
         keep_ids = {n.work_unit_id for n in nodes}
@@ -1834,8 +1870,13 @@ class ApplicationService:
                 continue
             if not self._deps_satisfied(session, wu_id, edges):
                 continue
-            # workspace writer check
-            ws = session.get(WorkspaceRow, f"ws_{wu_id}")
+            # workspace writer check (node may share an explicit workspace_id)
+            ws_id = str(node.get("workspace_id") or f"ws_{wu_id}")
+            ws = session.get(WorkspaceRow, ws_id)
+            if ws is None:
+                ws = session.scalars(
+                    select(WorkspaceRow).where(WorkspaceRow.work_unit_id == wu_id)
+                ).first()
             if ws and ws.state == WorkspaceState.QUARANTINED:
                 continue
             if ws and ws.writer_alive and ws.owner_run_id:
@@ -2728,6 +2769,11 @@ class ApplicationService:
                 session.delete(marker)
             # Result completion ≠ executor exit: keep Workspace ownership until
             # confirm_run_exit / stop acknowledgment (§8.2).
+            self._maybe_advance_verify_task_state(session, task, wu, result, outcome)
+
+        if run.assignment_kind == AssignmentKind.PLAN:
+            # PLAN Runs have no workspace writer; free the session marker on result.
+            self._clear_run_occupancy(session, run, release_workspace=True)
 
         self._append_event(
             session,
@@ -2745,6 +2791,36 @@ class ApplicationService:
                 "workspace_released": False,
             }
         )
+
+    def _maybe_advance_verify_task_state(
+        self,
+        session: Session,
+        task: TaskRow,
+        wu: WorkUnitExecutionRow,
+        result: dict[str, Any],
+        outcome: str,
+    ) -> None:
+        """Drive VERIFYING / verification.failed from VERIFY Work Unit results (§7–§8)."""
+        if outcome == "BLOCKED":
+            return
+        spec = session.scalars(
+            select(WorkUnitSpecRow).where(
+                WorkUnitSpecRow.work_unit_id == wu.work_unit_id,
+                WorkUnitSpecRow.spec_version == wu.spec_version,
+            )
+        ).first()
+        if spec is None or (spec.work_type or "").upper() != "VERIFY":
+            return
+        try:
+            if TaskState(task.state) == TaskState.EXECUTING:
+                self._set_task_state(session, task, "required_outputs.ready")
+            if (
+                result.get("verdict") == Verdict.FAIL
+                and TaskState(task.state) == TaskState.VERIFYING
+            ):
+                self._set_task_state(session, task, "verification.failed")
+        except (InvalidTransitionError, DomainError):
+            return
 
     def _register_result_artifacts(
         self,
@@ -4096,6 +4172,361 @@ class ApplicationService:
                 }
             )
         return self._activate_plan(session, auth, payload)
+
+    def _dispatch_planner_run(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Create the public PLAN AgentRun for the Task's ACTIVE PlannerSession (§9.1)."""
+        task = self._get_task(session, payload["task_id"])
+        try:
+            guard_dispatch(
+                task_state=TaskState(task.state),
+                has_active_contract=self._active_contract(session, task.task_id) is not None,
+                has_blocking_gate=self._has_blocking_gate(session, task.task_id),
+                cancel_intent=bool(task.cancel_intent),
+                pause_intent=bool(task.pause_intent),
+            )
+        except PreconditionError as exc:
+            return CommandResult.failure(exc.code, exc.message)
+
+        session_id = task.active_planner_session_id
+        if session_id is None:
+            # Ensure a session exists (generation 1) before the first PLAN Run.
+            created = self._replace_planner_generation(
+                session, auth, {"task_id": task.task_id}
+            )
+            session_id = str(created.data["planner_session_id"])
+        ps = session.get(PlannerSessionRow, session_id)
+        assert ps is not None
+        if ps.status != "ACTIVE":
+            raise PreconditionError(
+                "planner session is not ACTIVE", code="planner_session_inactive"
+            )
+        if ps.task_id != task.task_id:
+            raise PreconditionError("planner session task mismatch", code="planner_task_mismatch")
+
+        existing_marker = session.get(ActivePlanRunMarker, session_id)
+        if existing_marker is not None:
+            marked = session.get(AgentRunRow, existing_marker.run_id)
+            if marked is not None and marked.status in {
+                AgentRunStatus.CREATED,
+                AgentRunStatus.RUNNING,
+            }:
+                return CommandResult.success(
+                    {
+                        "task_id": task.task_id,
+                        "run_id": marked.run_id,
+                        "already_active": True,
+                        "generation": ps.generation,
+                    }
+                )
+            session.delete(existing_marker)
+
+        global_active = self._count_active_runs(session)
+        task_active = self._count_active_runs(session, task_id=task.task_id)
+        if global_active >= DEFAULTS.global_run_concurrency:
+            return CommandResult.failure("concurrency_limit", "global run concurrency exhausted")
+        if task_active >= DEFAULTS.per_task_run_concurrency:
+            return CommandResult.failure("concurrency_limit", "per-task run concurrency exhausted")
+
+        run_id = new_id("run")
+        now = self.clock.now()
+        fencing = 1
+        run = AgentRunRow(
+            run_id=run_id,
+            task_id=task.task_id,
+            assignment_kind=AssignmentKind.PLAN,
+            planner_session_id=session_id,
+            agent_instance_id=f"planner:{run_id}",
+            work_unit_id=None,
+            attempt_no=1,
+            profile_id="planner",
+            profile_version=1,
+            contract_version=int(task.contract_version or 0),
+            plan_version=task.plan_version,
+            status=AgentRunStatus.CREATED,
+            fencing_epoch=fencing,
+            grant_epoch=task.revoke_epoch,
+            lease_expires_at=now + timedelta(seconds=DEFAULTS.lease_seconds),
+            resumed_from_run_id=payload.get("resumed_from_run_id"),
+        )
+        session.add(run)
+        session.flush()
+        session.add(ActivePlanRunMarker(planner_session_id=session_id, run_id=run_id))
+        ps.active_run_id = run_id
+        outbox_id = new_id("ob")
+        session.add(
+            OutboxRow(
+                outbox_id=outbox_id,
+                task_id=task.task_id,
+                command_type="agent.start",
+                payload_json=canonical_json(
+                    {
+                        "run_id": run_id,
+                        "task_id": task.task_id,
+                        "assignment_kind": AssignmentKind.PLAN,
+                        "planner_session_id": session_id,
+                        "generation": ps.generation,
+                        "checkpoint_ref": ps.checkpoint_ref,
+                        "checkpoint_version": ps.checkpoint_version,
+                        "last_consumed_message_seq": ps.last_consumed_message_seq,
+                        "principal_id": task.principal_id,
+                        "agent_instance_id": run.agent_instance_id,
+                        "grant_epoch": run.grant_epoch,
+                        "fencing_epoch": fencing,
+                        "revoke_epoch": task.revoke_epoch,
+                    }
+                ),
+                status=OutboxStatus.PENDING,
+                revoke_epoch=task.revoke_epoch,
+                created_at=now,
+            )
+        )
+        self._append_event(
+            session,
+            task.task_id,
+            "plan_run.created",
+            auth_actor=auth.actor_id,
+            payload={
+                "run_id": run_id,
+                "planner_session_id": session_id,
+                "generation": ps.generation,
+            },
+        )
+        return CommandResult.success(
+            {
+                "task_id": task.task_id,
+                "run_id": run_id,
+                "planner_session_id": session_id,
+                "generation": ps.generation,
+            }
+        )
+
+    def _advance_planner_checkpoint(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Persist checkpoint_ref and message cursor in one transaction (H-036 / §9.1)."""
+        task = self._get_task(session, payload["task_id"])
+        session_id = task.active_planner_session_id or payload.get("planner_session_id")
+        if not session_id:
+            raise PreconditionError("no planner session", code="no_planner_session")
+        ps = session.get(PlannerSessionRow, session_id)
+        if ps is None or ps.task_id != task.task_id:
+            raise NotFoundError("planner session not found", code="planner_session_not_found")
+        if int(payload.get("generation") or 0) != int(ps.generation):
+            return CommandResult.failure(
+                "stale_generation",
+                "stale planner generation",
+                data={"got": payload.get("generation"), "expected": ps.generation},
+            )
+        run_id = payload.get("run_id") or ps.active_run_id
+        if run_id:
+            run = session.get(AgentRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run not found", code="run_not_found")
+            if run.assignment_kind != AssignmentKind.PLAN or run.planner_session_id != session_id:
+                raise PreconditionError("run is not the PLAN run", code="not_plan_run")
+            self._assert_run_write_binding(session, auth, run, payload)
+
+        consumed = int(payload.get("last_consumed_message_seq") or ps.last_consumed_message_seq)
+        if consumed < int(ps.last_consumed_message_seq or 0):
+            raise PreconditionError(
+                "message cursor must not move backwards", code="cursor_regression"
+            )
+        max_seq = session.scalars(
+            select(func.max(TaskMessageRow.sequence_no)).where(
+                TaskMessageRow.task_id == task.task_id
+            )
+        ).one()
+        max_seq_i = int(max_seq or 0)
+        if consumed > max_seq_i:
+            raise PreconditionError(
+                "message cursor past end of log", code="cursor_past_end"
+            )
+
+        # Same transaction: checkpoint pointer + version + cursor.
+        if "checkpoint_ref" in payload:
+            ps.checkpoint_ref = payload.get("checkpoint_ref")
+        ps.checkpoint_version = int(ps.checkpoint_version or 0) + 1
+        ps.last_consumed_message_seq = consumed
+        self._append_event(
+            session,
+            task.task_id,
+            "planner.checkpoint_advanced",
+            auth_actor=auth.actor_id,
+            payload={
+                "planner_session_id": session_id,
+                "checkpoint_ref": ps.checkpoint_ref,
+                "checkpoint_version": ps.checkpoint_version,
+                "last_consumed_message_seq": ps.last_consumed_message_seq,
+                "generation": ps.generation,
+            },
+        )
+        return CommandResult.success(
+            {
+                "task_id": task.task_id,
+                "planner_session_id": session_id,
+                "checkpoint_ref": ps.checkpoint_ref,
+                "checkpoint_version": ps.checkpoint_version,
+                "last_consumed_message_seq": ps.last_consumed_message_seq,
+                "generation": ps.generation,
+            }
+        )
+
+    def _post_task_message(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """Append a collaboration message. Workers/Planners may post; they cannot spawn."""
+        task = self._get_task(session, payload["task_id"])
+        run_id = payload.get("run_id")
+        if run_id:
+            run = session.get(AgentRunRow, run_id)
+            if run is None:
+                raise NotFoundError("run not found", code="run_not_found")
+            self._assert_run_write_binding(session, auth, run, payload)
+            if run.task_id != task.task_id:
+                raise AuthorizationError("run task mismatch", code="authorization_denied")
+        next_seq = int(
+            session.scalars(
+                select(func.max(TaskMessageRow.sequence_no)).where(
+                    TaskMessageRow.task_id == task.task_id
+                )
+            ).one()
+            or 0
+        ) + 1
+        body = payload.get("body") or {}
+        kind = str(payload.get("kind") or "note")
+        session.add(
+            TaskMessageRow(
+                task_id=task.task_id,
+                sequence_no=next_seq,
+                sender_run_id=run_id,
+                sender_actor=auth.actor_id,
+                kind=kind,
+                body_json=canonical_json(body),
+                created_at=self.clock.now(),
+            )
+        )
+        self._append_event(
+            session,
+            task.task_id,
+            "task.message_posted",
+            auth_actor=auth.actor_id,
+            payload={"sequence_no": next_seq, "kind": kind, "run_id": run_id},
+        )
+        return CommandResult.success(
+            {"task_id": task.task_id, "sequence_no": next_seq, "kind": kind}
+        )
+
+    def _request_spawn(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """H-034: only Core may spawn. Any Planner/Worker request is refused and audited."""
+        task_id = str(payload.get("task_id") or "")
+        if task_id:
+            task = self._get_task(session, task_id)
+            self._append_event(
+                session,
+                task.task_id,
+                "spawn.refused",
+                auth_actor=auth.actor_id,
+                payload={
+                    "reason": "core_only_spawn",
+                    "requested_by": auth.actor_type,
+                    "actor_id": auth.actor_id,
+                    "detail": payload.get("detail") or payload.get("kind"),
+                },
+            )
+        return CommandResult.failure(
+            "spawn_forbidden",
+            "formal dispatch is Core-only; Planner/Worker spawn refused",
+            data={"task_id": task_id or None},
+        )
+
+    def _close_planner_session(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        task = self._get_task(session, payload["task_id"])
+        session_id = task.active_planner_session_id
+        if session_id is None:
+            raise PreconditionError("no planner session", code="no_planner_session")
+        ps = session.get(PlannerSessionRow, session_id)
+        assert ps is not None
+        marker = session.get(ActivePlanRunMarker, session_id)
+        if marker is not None:
+            run = session.get(AgentRunRow, marker.run_id)
+            if run is not None and run.status in {
+                AgentRunStatus.CREATED,
+                AgentRunStatus.RUNNING,
+            }:
+                raise PreconditionError(
+                    "active PLAN run still present", code="active_plan_run"
+                )
+        ps.status = str(payload.get("status") or "CLOSED")
+        ps.active_run_id = None
+        self._append_event(
+            session,
+            task.task_id,
+            "planner.session_closed",
+            auth_actor=auth.actor_id,
+            payload={"planner_session_id": session_id, "status": ps.status},
+        )
+        return CommandResult.success(
+            {"task_id": task.task_id, "planner_session_id": session_id, "status": ps.status}
+        )
+
+    def _request_repair_plan(
+        self, session: Session, auth: AuthContext, payload: dict[str, Any]
+    ) -> CommandResult:
+        """H-038: after VERIFY FAIL, propose Repair + new Verify as a Plan Revision."""
+        task = self._get_task(session, payload["task_id"])
+        failed_verify_id = str(payload["failed_verify_work_unit_id"])
+        wu = session.get(WorkUnitExecutionRow, failed_verify_id)
+        if wu is None or wu.task_id != task.task_id:
+            raise NotFoundError("verify work unit not found", code="work_unit_not_found")
+        if wu.selected_verdict != Verdict.FAIL:
+            raise PreconditionError(
+                "repair requires a FAIL verify verdict", code="verify_not_failed"
+            )
+        repair_id = str(payload.get("repair_work_unit_id") or new_id("wu"))
+        verify_id = str(payload.get("new_verify_work_unit_id") or new_id("wu"))
+        upstream_hash = payload.get("artifact_hash") or "repair-target-hash"
+        nodes = list(payload.get("keep_nodes") or [])
+        nodes.extend(
+            [
+                {
+                    "work_unit_id": repair_id,
+                    "spec_version": 1,
+                    "work_type": "REPAIR",
+                },
+                {
+                    "work_unit_id": verify_id,
+                    "spec_version": 1,
+                    "work_type": "VERIFY",
+                },
+            ]
+        )
+        edges = list(payload.get("keep_edges") or [])
+        edges.append(
+            {
+                "from_work_unit_id": repair_id,
+                "to_work_unit_id": verify_id,
+                "predicate": "VERDICT_PASS",
+                "artifact_hash": upstream_hash,
+            }
+        )
+        proposal = {
+            "task_id": task.task_id,
+            "nodes": nodes,
+            "edges": edges,
+            "expected_plan_version": task.plan_version,
+            "expected_contract_version": task.contract_version,
+            "generation": payload.get("generation"),
+            "objective": payload.get("objective") or f"repair after {failed_verify_id}",
+        }
+        if task.active_planner_session_id and proposal["generation"] is not None:
+            return self._submit_plan_proposal(session, auth, proposal)
+        return self._activate_plan(session, auth, proposal)
 
     def _merge_contract_content(
         self, base: dict[str, Any], delta: dict[str, Any]

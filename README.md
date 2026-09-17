@@ -1,7 +1,8 @@
 # HIBIKI
 
-Task-centered agent execution system. M0 implements the deterministic kernel
-(no LLM, no Docker, no WebUI): Contract → Plan → Run → Decision with Fake adapters.
+Task-centered agent execution system. M0 is the deterministic kernel; M1 adds a
+real Worker / sandbox boundary; M2 adds PlannerSession, DAG parallelism,
+Integration, and Verify/Repair.
 
 ## Quick start
 
@@ -26,6 +27,12 @@ See `HIBIKI_MVP_SPEC_v0.2.1.md` and `docs/adr/`.
   the live gate ran **6/6** (three fixed tasks × 2 runs, zero authorization violations, every
   artifact verified). Evidence under `docs/acceptance/evidence/m1-2026-09-13/`; the executable
   plan is [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
+- **M2 §24.5**: [`docs/acceptance/M2-2026-09-17.md`](docs/acceptance/M2-2026-09-17.md) —
+  **G1–G5 PASS** (H-033–H-038, barrier parallel, Fake×20, Planner checkpoint recovery);
+  **G6 live NOT MET** (3/3 tasks ran on `deepseek-flash`, all EXECUTE Runs `BLOCKED`:
+  workspace missing + Docker unavailable). Executable plan: [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md).
+  Evidence under `docs/acceptance/evidence/m2-harness-smoke/` and
+  `docs/acceptance/evidence/m2-2026-09-17/live-runs/`.
 
 ### Running the M1 live-model gate
 
@@ -42,6 +49,15 @@ The second runs the three fixed tasks in `docs/m1/tasks/` twice each and writes 
 record per run plus a `summary.json`; the gate is at least 5 of 6 runs with a
 COMPLETED/PASS result, verified artifacts and no fabricated artifact reference.
 Without credentials, `--dry-run` exercises the same path and never reports a pass.
+
+### Running the M2 complex Fake / live harness
+
+```bash
+uv run --no-sync python -m hibiki.interfaces.m2_runner --dry-run --clean \
+  --data-dir /tmp/hibiki-m2 --out docs/acceptance/evidence/m2-harness-smoke
+uv run --no-sync python -m hibiki.interfaces.m2_runner --live --clean \
+  --data-dir /tmp/hibiki-m2 --out docs/acceptance/evidence/m2-<date>/live-runs
+```
 
 The suite runs offline on Fake adapters only; set `UV_CACHE_DIR` to a writable path when the
 default uv cache is not accessible:

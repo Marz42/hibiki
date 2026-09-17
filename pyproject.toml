@@ -1,7 +1,7 @@
 [project]
 name = "hibiki"
 version = "0.1.0"
-description = "HIBIKI — Task-centered agent execution system (M0 kernel + M1 real worker)"
+description = "HIBIKI — Task-centered agent execution system (M0–M2: kernel, real worker, Planner/DAG)"
 readme = "README.md"
 authors = [
     { name = "marz", email = "marz@work" }

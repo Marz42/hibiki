@@ -117,7 +117,7 @@ def test_startup_upgrades_m0_generation_to_m1(tmp_path: Path):
     con = sqlite3.connect(db)
     assert con.execute(
         "SELECT value FROM schema_meta WHERE key='schema_version'"
-    ).fetchone()[0] == "m1"
+    ).fetchone()[0] == "m2"
     con.close()
 
 
