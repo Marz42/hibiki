@@ -790,11 +790,17 @@ class ApplicationService:
     def _release_workspace_after_confirmed_exit(
         self, session: Session, run: AgentRunRow
     ) -> None:
-        """Restore this Run's Workspace once its sandbox exit is proven (SPEC §11.1).
+        """Release this Run's Workspace only once the Run itself has finished.
 
-        Called on a definitive ``exit_confirmed`` so a normally-finished writer no
-        longer blocks downstream or parallel Work Units on the same Workspace.
+        A confirmed *container* exit proves one shell command ended, not that the Run is
+        done: the worker keeps its Workspace, keeps calling tools, and may run further
+        commands. Releasing on the container ACK let a second Run start on the same
+        Workspace while the first was still RUNNING, which breaks the single-writer
+        serialization of SPEC §11.1. Occupancy is therefore released by
+        :meth:`_clear_run_occupancy` when the Run reaches a terminal state.
         """
+        if not is_terminal_run(AgentRunStatus(run.status)):
+            return
         ws = session.get(WorkspaceRow, run.workspace_id) if run.workspace_id else None
         if ws is None or ws.owner_run_id != run.run_id:
             return
@@ -1596,18 +1602,7 @@ class ApplicationService:
             )
             for e in raw_edges
         ]
-        validate_dag(
-            task_id=task.task_id,
-            nodes=nodes,
-            edges=edges,
-            # A fixed verification topology proposed before any Run has published
-            # bytes cannot name the digest yet; the caller must opt in explicitly and
-            # acceptance still proves the delivery is content-backed (SPEC §6.1).
-            require_verdict_artifact_hash=payload.get(
-                "require_verdict_artifact_hash", True
-            )
-            is not False,
-        )
+        validate_dag(task_id=task.task_id, nodes=nodes, edges=edges)
 
         # H-033 / §6.1: refuse without destroying the prior ACTIVE plan. Cross-task
         # ownership and capacity caps must be checked *before* superseding.
@@ -1925,6 +1920,16 @@ class ApplicationService:
                 continue
             if ws and ws.writer_alive and ws.owner_run_id:
                 continue
+            # Defense in depth: never schedule a second writer while the Workspace's
+            # owner Run is still live, even if an occupancy flag was cleared early.
+            # Single-writer serialization must not depend on flags staying consistent.
+            if ws and ws.owner_run_id:
+                owner = session.get(AgentRunRow, ws.owner_run_id)
+                if owner is not None and owner.status in {
+                    AgentRunStatus.CREATED,
+                    AgentRunStatus.RUNNING,
+                }:
+                    continue
             # stale marker without active run must not block forever — but also
             # must not allow double writers; clear orphan markers for non-active runs
             marker = session.get(ActiveExecuteRunMarker, wu_id)
@@ -4796,31 +4801,52 @@ class ApplicationService:
             )
         repair_id = str(payload.get("repair_work_unit_id") or new_id("wu"))
         verify_id = str(payload.get("new_verify_work_unit_id") or new_id("wu"))
-        upstream_hash = payload.get("artifact_hash") or "repair-target-hash"
-        nodes = list(payload.get("keep_nodes") or [])
-        nodes.extend(
-            [
-                {
-                    "work_unit_id": repair_id,
-                    "spec_version": 1,
-                    "work_type": "REPAIR",
-                },
+        the_hash = payload.get("artifact_hash")
+        upstream_hash = the_hash or "repair-target-hash"
+        # The failing evidence becomes the Repair unit's objective: a Repair told only
+        # "repair after <wu_id>" has nothing actionable to fix.
+        failed_evidence = str(payload.get("failed_evidence") or "").strip()
+        # The FAILed VERIFY is superseded, not carried forward: a terminal Work Unit never
+        # revives (SPEC §6.4), so keeping it in the revision leaves a node that can never
+        # reach DONE/PASS and blocks every downstream dependency on the active plan.
+        nodes = [
+            n
+            for n in (payload.get("keep_nodes") or [])
+            if str(n.get("work_unit_id")) != failed_verify_id
+        ]
+        repair_node: dict[str, Any] = {
+            "work_unit_id": repair_id,
+            "spec_version": 1,
+            "work_type": "REPAIR",
+            "objective": payload.get("objective")
+            or (
+                f"repair after {failed_verify_id}"
+                + (f": {failed_evidence}" if failed_evidence else "")
+            ),
+        }
+        nodes.append(repair_node)
+        # With no real digest to pin yet, the re-verify node is added by a later revision
+        # bound to the repaired artifact. A VERDICT_PASS edge must never be created
+        # against an unknown hash (SPEC §6.1).
+        include_verify = payload.get("include_verify", True) is not False
+        if include_verify:
+            nodes.append(
                 {
                     "work_unit_id": verify_id,
                     "spec_version": 1,
                     "work_type": "VERIFY",
-                },
-            ]
-        )
+                }
+            )
         edges = list(payload.get("keep_edges") or [])
-        edges.append(
-            {
-                "from_work_unit_id": repair_id,
-                "to_work_unit_id": verify_id,
-                "predicate": "VERDICT_PASS",
-                "artifact_hash": upstream_hash,
-            }
-        )
+        if include_verify:
+            edges.append(
+                {
+                    "from_work_unit_id": repair_id,
+                    "to_work_unit_id": verify_id,
+                    "predicate": "VERDICT_PASS",
+                    "artifact_hash": upstream_hash,
+                }
+            )
         proposal = {
             "task_id": task.task_id,
             "nodes": nodes,
