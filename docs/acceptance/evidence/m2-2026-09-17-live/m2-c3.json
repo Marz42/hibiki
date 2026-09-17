@@ -1,7 +1,7 @@
 {
   "task_def": "m2-c3",
-  "task_id": "task_3cfdb8f59d844a71",
-  "plan_version": 1,
+  "task_id": "task_f4f34152c0844521",
+  "plan_version": 2,
   "workspaces": [
     "ws_m2_c3_wu_conv1",
     "ws_m2_c3_wu_conv2",
@@ -10,7 +10,7 @@
   ],
   "runs": [
     {
-      "run_id": "run_28e4590ce1c44fc7",
+      "run_id": "run_03ce07b508cc4926",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
@@ -30,7 +30,7 @@
         "published_paths": [
           "out/a.upper.txt"
         ],
-        "summary": "Unit m2_c3_wu_conv1 complete.\n\n- Read `attachments/a.txt` (sha256 `372174391a\u2026`, content `alpha sample content\\n`).\n- Wrote uppercased content to `out/a.upper.txt` (21 bytes, sha256 `c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9`).\n- Published the artifact: `artifact://c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9`.\n- Verified by re-reading the file: content matches `ALPHA SAMPLE CONTENT\\n` with the published hash.\n\nNo later-unit work (conversion of `b.txt`, catalog, or verify) was performed.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9\",\"verdict\":\"PASS\"}]}",
+        "summary": "Task complete. I read `attachments/a.txt` (content `\"alpha sample content\\n\"`, sha256 `372174391a...`), uppercased it to `\"ALPHA SAMPLE CONTENT\\n\"`, wrote it to `out/a.upper.txt`, verified the round-trip read, and published the artifact.\n\n- **Input**: `attachments/a.txt` \u2192 `alpha sample content\\n`\n- **Output**: `out/a.upper.txt` \u2192 `ALPHA SAMPLE CONTENT\\n`\n- **Artifact hash**: `c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9`\n\nI did not perform the later units' work (no `out/b.upper.txt`, no `catalog.md`).\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c3_wu_conv1",
@@ -38,7 +38,7 @@
       "artifact_hash": "c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9"
     },
     {
-      "run_id": "run_83edf01b3d0b430e",
+      "run_id": "run_85fce6227fa24af1",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
@@ -58,7 +58,7 @@
         "published_paths": [
           "out/b.upper.txt"
         ],
-        "summary": "Read attachments/b.txt (\"beta sample content\\n\"), wrote its uppercased contents to out/b.upper.txt, and published it. No later-unit work performed.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"319ec997be6622c2bffdac566655aa5e72ce2a2ac062df4530bd4c18b208ee6e\",\"verdict\":\"PASS\"}]}",
+        "summary": "{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"319ec997be6622c2bffdac566655aa5e72ce2a2ac062df4530bd4c18b208ee6e\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c3_wu_conv2",
@@ -66,19 +66,19 @@
       "artifact_hash": "319ec997be6622c2bffdac566655aa5e72ce2a2ac062df4530bd4c18b208ee6e"
     },
     {
-      "run_id": "run_51ee6932d68f47d0",
+      "run_id": "run_16d93c0a10a44def",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53",
+            "artifact_hash": "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53"
+          "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -86,27 +86,27 @@
         "published_paths": [
           "catalog.md"
         ],
-        "summary": "Catalog written and published.\n\nDELIVERABLE: catalog.md listing the two prerequisite uppercase files (`m2_c3_wu_conv1.txt` \u2192 ALPHA SAMPLE CONTENT, `m2_c3_wu_conv2.txt` \u2192 BETA SAMPLE CONTENT). Verify step intentionally not performed (out of scope for this unit).\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53\",\"verdict\":\"PASS\"}]}",
+        "summary": "Deliverable `catalog.md` written and published.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c3_wu_integrate",
       "work_type": "INTEGRATE",
-      "artifact_hash": "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53"
+      "artifact_hash": "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435"
     },
     {
-      "run_id": "run_a235eb96ec0c4883",
+      "run_id": "run_2e279414993e41c6",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "cad096629bf14d369d8cf8da1adf48c61d158f69c098ec87dd914edc20aa7e66",
+            "artifact_hash": "21eb4ee4419de87bc777f2e4c9a8fa12f8d952c875e16136d3209b649d003d2e",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "cad096629bf14d369d8cf8da1adf48c61d158f69c098ec87dd914edc20aa7e66"
+          "21eb4ee4419de87bc777f2e4c9a8fa12f8d952c875e16136d3209b649d003d2e"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -114,23 +114,74 @@
         "published_paths": [
           "verify.md"
         ],
-        "summary": "Verified the delivered catalog artifact (`delivered/m2_c3_wu_integrate.md`), confirmed its hash matches the upstream INTEGRATE result, and validated that its two entries correctly reflect the uppercased source attachments. Wrote and published `verify.md` with an explicit PASS verdict.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"cad096629bf14d369d8cf8da1adf48c61d158f69c098ec87dd914edc20aa7e66\",\"verdict\":\"PASS\"}]}",
+        "summary": "Verification complete. I inspected the delivered catalog artifact (staged as `m2_c3_wu_integrate.md`, hash `6cc3ba74\u2026` matching the expected upstream `VERDICT_PASS` edge), confirmed both catalog entries are the true uppercase transforms of `attachments/a.txt`/`b.txt`, and independently reproduced both embedded sha256 values. Wrote and published `verify.md` with an explicit PASS verdict. I did not modify any other unit's deliverable.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"21eb4ee4419de87bc777f2e4c9a8fa12f8d952c875e16136d3209b649d003d2e\",\"verdict\":\"PASS\"}]}\n```",
         "verdict": "PASS"
       },
-      "work_unit_id": "m2_c3_wu_verify",
+      "work_unit_id": "wu_c4f7f2342139406c",
       "work_type": "VERIFY",
-      "artifact_hash": "cad096629bf14d369d8cf8da1adf48c61d158f69c098ec87dd914edc20aa7e66"
+      "artifact_hash": "21eb4ee4419de87bc777f2e4c9a8fa12f8d952c875e16136d3209b649d003d2e"
     }
   ],
   "publish_hashes": [
     "c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9",
     "319ec997be6622c2bffdac566655aa5e72ce2a2ac062df4530bd4c18b208ee6e",
-    "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53",
-    "cad096629bf14d369d8cf8da1adf48c61d158f69c098ec87dd914edc20aa7e66"
+    "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435",
+    "21eb4ee4419de87bc777f2e4c9a8fa12f8d952c875e16136d3209b649d003d2e"
   ],
   "terminal": "COMPLETED",
   "ok": true,
   "inject_required": false,
+  "task_topology_nodes": [
+    {
+      "work_unit_id": "m2_c3_wu_conv1",
+      "work_type": "EXECUTE",
+      "spec_version": 1,
+      "objective": "This unit only: read attachments/a.txt, write its contents uppercased to out/a.upper.txt, then publish out/a.upper.txt. Do not perform later units' work.",
+      "input_refs": [
+        "attachments/a.txt"
+      ],
+      "expected_outputs": [
+        "out/a.upper.txt"
+      ]
+    },
+    {
+      "work_unit_id": "m2_c3_wu_conv2",
+      "work_type": "EXECUTE",
+      "spec_version": 1,
+      "objective": "This unit only: read attachments/b.txt, write its contents uppercased to out/b.upper.txt, then publish out/b.upper.txt. Do not perform later units' work.",
+      "input_refs": [
+        "attachments/b.txt"
+      ],
+      "expected_outputs": [
+        "out/b.upper.txt"
+      ]
+    },
+    {
+      "work_unit_id": "m2_c3_wu_integrate",
+      "work_type": "INTEGRATE",
+      "spec_version": 1,
+      "objective": "This unit only: write catalog.md listing the two uppercase files delivered by the prerequisite units, then publish catalog.md. Prerequisite deliverables are staged at the workspace top level as <work_unit_id>.txt. Do not perform the verify step.",
+      "expected_outputs": [
+        "catalog.md"
+      ],
+      "_upstream_paths": [
+        "out/a.upper.txt",
+        "out/b.upper.txt"
+      ]
+    },
+    {
+      "work_unit_id": "m2_c3_wu_verify",
+      "work_type": "VERIFY",
+      "spec_version": 1,
+      "objective": "This unit only: inspect the delivered catalog artifact staged under delivered/, write verify.md with an explicit PASS or FAIL verdict, then publish verify.md. Do not rewrite another unit's deliverable.",
+      "expected_outputs": [
+        "verify.md"
+      ],
+      "_upstream_paths": [
+        "catalog.md"
+      ]
+    }
+  ],
   "dependency_deliveries": [
     {
       "from": "m2_c3_wu_conv1",
@@ -148,39 +199,48 @@
     },
     {
       "from": "m2_c3_wu_integrate",
-      "to": "m2_c3_wu_verify",
-      "file": "delivered/m2_c3_wu_integrate.md",
-      "artifact_hash": "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53",
-      "bytes": 425
+      "to": "wu_c4f7f2342139406c",
+      "file": "m2_c3_wu_integrate.md",
+      "artifact_hash": "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435",
+      "bytes": 1003
     }
   ],
-  "integrate_artifact_hash": "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53",
+  "integrate_artifact_hash": "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435",
+  "verify_revision": {
+    "ok": true,
+    "error": null,
+    "plan_version": 2,
+    "node_count": 4,
+    "new_verify_work_units": [
+      "wu_c4f7f2342139406c"
+    ],
+    "pinned_artifact_hash": "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435"
+  },
   "failures": [],
   "done_work_units": [
     "m2_c3_wu_conv1",
     "m2_c3_wu_conv2",
     "m2_c3_wu_integrate",
-    "m2_c3_wu_verify"
+    "wu_c4f7f2342139406c"
   ],
   "missing_work_units": [],
   "verify_pass_work_units": [
-    "m2_c3_wu_verify"
+    "wu_c4f7f2342139406c"
   ],
   "artifact_count": 4,
   "unbacked_artifacts": [],
   "unverified_artifact_content": [],
   "artifact_binding_ok": true,
   "artifact_binding": {
-    "pinned": [],
-    "integrate_work_unit": "m2_c3_wu_integrate",
-    "integrate_verified_artifact_hash": "7daa866307272aaa3c5d820598efeb17f24efdd3798b80ae2221c561ab387e53",
-    "verify_work_units": [
-      "m2_c3_wu_verify"
+    "pinned": [
+      "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435"
     ],
-    "verify_pass_work_units": [
-      "m2_c3_wu_verify"
-    ],
-    "integrate_content_backed": true
+    "delivered": [
+      "21eb4ee4419de87bc777f2e4c9a8fa12f8d952c875e16136d3209b649d003d2e",
+      "319ec997be6622c2bffdac566655aa5e72ce2a2ac062df4530bd4c18b208ee6e",
+      "6cc3ba7413b4f3dbaabdafa766d3d4b76afd883927e0d285e235460bb834c435",
+      "c58cf75637b1d91d3ba6441e2f93bd23584f5d94d61f731c79cb6caa3f73cfd9"
+    ]
   },
   "unconfirmed_runs": [],
   "planned_nodes": 4,

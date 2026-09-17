@@ -8,6 +8,12 @@ reconstructible.**
 
 Verdict: **PASS — 3/3 completed**, harness exit code 0.
 
+Every task reached this through a **two-phase Plan**: the producing Work Units run first,
+then the VERIFY stage is added by a Plan Revision pinned to the digest that actually exists
+(`verify_revision.ok == true`, `plan_version == 2`). The Core's SPEC §6.1 rule that a
+`VERDICT_PASS` edge must name an artifact hash is enforced unconditionally — there is no
+opt-out parameter.
+
 ## Command
 
 ```bash
@@ -54,7 +60,7 @@ uv run --no-sync python -m hibiki.interfaces.m2_runner --live --clean \
 
 ## Verification at this tree
 
-- `pytest-full.log` / `junit-full.xml`: **321 passed, 0 skipped** (Docker up, so the
+- `pytest-full.log` / `junit-full.xml`: **323 passed, 0 skipped** (Docker up, so the
   sandbox suite runs instead of skipping).
 - `uv run ruff check .`: clean.
 - `source-files.sha256` pins the tree that produced this evidence.

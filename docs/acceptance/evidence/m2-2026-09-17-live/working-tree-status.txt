@@ -1,12 +1,15 @@
- M README.md
- M docs/M2-CHECKLIST.md
- M docs/acceptance/M2-2026-09-17.md
- M docs/m2/tasks/c2-edit-integrate-repair.json
- M docs/m2/tasks/c3-convert-catalog.json
+ M docs/M2-KNOWN-GAPS.md
+ M docs/acceptance/evidence/m2-2026-09-17-live/environment.txt
+ M docs/acceptance/evidence/m2-2026-09-17-live/junit-full.xml
+ M docs/acceptance/evidence/m2-2026-09-17-live/live-runs.log
+ M docs/acceptance/evidence/m2-2026-09-17-live/m2-c1.json
+ M docs/acceptance/evidence/m2-2026-09-17-live/m2-c2.json
+ M docs/acceptance/evidence/m2-2026-09-17-live/m2-c3.json
+ M docs/acceptance/evidence/m2-2026-09-17-live/pytest-full.log
+ M docs/acceptance/evidence/m2-2026-09-17-live/source-files.sha256
+ M docs/acceptance/evidence/m2-2026-09-17-live/summary.json
+ M docs/acceptance/evidence/m2-2026-09-17-live/working-tree-status.txt
  M src/hibiki/application/service.py
  M src/hibiki/domain/plan.py
  M src/hibiki/interfaces/m2_runner.py
- M src/hibiki/runtime/api_agent.py
-?? docs/acceptance/evidence/m2-2026-09-17-live/
-?? docs/acceptance/evidence/m2-2026-09-17-remediation/
-?? tests/m2/test_second_review_regressions.py
+ M tests/m2/test_second_review_regressions.py

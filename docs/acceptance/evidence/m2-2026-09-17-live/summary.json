@@ -6,12 +6,12 @@
   "completed": 3,
   "failed": 0,
   "ok": true,
-  "at": "2026-09-17T14:25:44.521668+00:00",
+  "at": "2026-09-17T15:24:48.564607+00:00",
   "records": [
     {
       "task_def": "m2-c1",
       "ok": true,
-      "plan_version": 1,
+      "plan_version": 2,
       "failures": [],
       "artifact_count": 3,
       "unbacked_artifacts": []
@@ -19,7 +19,7 @@
     {
       "task_def": "m2-c2",
       "ok": true,
-      "plan_version": 1,
+      "plan_version": 2,
       "failures": [],
       "artifact_count": 4,
       "unbacked_artifacts": []
@@ -27,7 +27,7 @@
     {
       "task_def": "m2-c3",
       "ok": true,
-      "plan_version": 1,
+      "plan_version": 2,
       "failures": [],
       "artifact_count": 4,
       "unbacked_artifacts": []
