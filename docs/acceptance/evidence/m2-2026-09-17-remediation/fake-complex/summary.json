@@ -1,0 +1,36 @@
+{
+  "mode": "dry-run",
+  "model": "fake",
+  "base_url": "fake",
+  "tasks": 3,
+  "completed": 3,
+  "failed": 0,
+  "ok": true,
+  "at": "2026-09-17T12:09:38.298459+00:00",
+  "records": [
+    {
+      "task_def": "m2-c1",
+      "ok": true,
+      "plan_version": 1,
+      "failures": [],
+      "artifact_count": 4,
+      "unbacked_artifacts": []
+    },
+    {
+      "task_def": "m2-c2",
+      "ok": true,
+      "plan_version": 2,
+      "failures": [],
+      "artifact_count": 5,
+      "unbacked_artifacts": []
+    },
+    {
+      "task_def": "m2-c3",
+      "ok": true,
+      "plan_version": 1,
+      "failures": [],
+      "artifact_count": 4,
+      "unbacked_artifacts": []
+    }
+  ]
+}

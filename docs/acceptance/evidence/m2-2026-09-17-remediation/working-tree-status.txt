@@ -1,0 +1,8 @@
+ M README.md
+ M docs/M2-CHECKLIST.md
+ M docs/acceptance/M2-2026-09-17.md
+ M src/hibiki/application/service.py
+ M src/hibiki/interfaces/m2_runner.py
+ M src/hibiki/runtime/api_agent.py
+?? docs/acceptance/evidence/m2-2026-09-17-remediation/
+?? tests/m2/test_second_review_regressions.py

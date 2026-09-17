@@ -1,0 +1,6 @@
+date_utc: 2026-09-17T12:09:33Z
+git_head: 89325333bbd97e83b98e4f80bcdef67c1a5e3684
+git_head_subject: Fix M2 review P1s: bind planner generation, keep VERIFY FAIL, and tighten auth/stop/harness gates.
+working_tree: 5 modified paths
+python: Python 3.12.12
+docker: DOWN

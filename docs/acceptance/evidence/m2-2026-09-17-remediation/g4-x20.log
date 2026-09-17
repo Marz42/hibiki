@@ -1,0 +1,211 @@
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_m0, m0 initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_m0 -> 0002_artifacts, m0 artifacts registry
+INFO  [alembic.runtime.migration] Running upgrade 0002_artifacts -> 0003_evidence, m0 evidence records and decision payload
+INFO  [alembic.runtime.migration] Running upgrade 0003_evidence -> 0004_evidence_sequence, acceptance evidence sequence_no
+INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005_m1_execution, m1 execution records
+INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
+INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
+INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
+[PASS] G4 x20 passed=20 repair_iterations=20 duplicate_runs=0 gate_bypasses=0

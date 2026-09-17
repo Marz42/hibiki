@@ -1,0 +1,192 @@
+{
+  "task_def": "m2-c2",
+  "task_id": "task_037febb8fffd49dd",
+  "plan_version": 1,
+  "workspaces": [
+    "ws_m2_c2_wu_edit_a",
+    "ws_m2_c2_wu_edit_b",
+    "ws_m2_c2_wu_integrate",
+    "ws_m2_c2_wu_verify"
+  ],
+  "runs": [
+    {
+      "run_id": "run_6c0487fb83724074",
+      "status": "SUCCEEDED",
+      "result": {
+        "acceptance_evidence": [
+          {
+            "artifact_hash": "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22",
+            "check": null,
+            "criterion_id": "c1",
+            "verdict": "PASS"
+          }
+        ],
+        "artifact_refs": [
+          "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22"
+        ],
+        "blocked_marker_asserted": false,
+        "marker": null,
+        "outcome": "COMPLETED",
+        "published_paths": [
+          "edits/a.md"
+        ],
+        "summary": "Unit complete \u2014 this unit's scope only (read `attachments/a.txt`, write and publish `edits/a.md`); no later-unit work performed.\n\n- Read `attachments/a.txt` (sha256 `372174391a023805bddb1685c89c4bca099a71535c381b51493019984970294e`).\n- Wrote `edits/a.md`: \"Alpha is the first letter of the Greek alphabet.\"\n- Published `edits/a.md` \u2192 artifact `d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22`.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22\",\"verdict\":\"PASS\"}]}\n```",
+        "verdict": "PASS"
+      },
+      "work_unit_id": "m2_c2_wu_edit_a",
+      "work_type": "EXECUTE",
+      "artifact_hash": "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22"
+    },
+    {
+      "run_id": "run_d7e309c1158c4e8b",
+      "status": "SUCCEEDED",
+      "result": {
+        "acceptance_evidence": [
+          {
+            "artifact_hash": "a34dadb47afdc361c378d653fd1346ca22946c858442f7a313e254c2e1252346",
+            "check": null,
+            "criterion_id": "c1",
+            "verdict": "PASS"
+          }
+        ],
+        "artifact_refs": [
+          "a34dadb47afdc361c378d653fd1346ca22946c858442f7a313e254c2e1252346"
+        ],
+        "blocked_marker_asserted": false,
+        "marker": null,
+        "outcome": "COMPLETED",
+        "published_paths": [
+          "edits/b.md"
+        ],
+        "summary": "Completed this unit only: read `attachments/b.txt`, wrote `edits/b.md` with one short sentence about beta, and published it. No later units' work was performed.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"a34dadb47afdc361c378d653fd1346ca22946c858442f7a313e254c2e1252346\",\"verdict\":\"PASS\"}]}",
+        "verdict": "PASS"
+      },
+      "work_unit_id": "m2_c2_wu_edit_b",
+      "work_type": "EXECUTE",
+      "artifact_hash": "a34dadb47afdc361c378d653fd1346ca22946c858442f7a313e254c2e1252346"
+    },
+    {
+      "run_id": "run_0b8d911feb264076",
+      "status": "SUCCEEDED",
+      "result": {
+        "acceptance_evidence": [
+          {
+            "artifact_hash": "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5",
+            "check": null,
+            "criterion_id": "c1",
+            "verdict": "PASS"
+          }
+        ],
+        "artifact_refs": [
+          "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5"
+        ],
+        "blocked_marker_asserted": false,
+        "marker": null,
+        "outcome": "COMPLETED",
+        "published_paths": [
+          "catalog.md"
+        ],
+        "summary": "{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5\",\"verdict\":\"PASS\"}]}",
+        "verdict": "PASS"
+      },
+      "work_unit_id": "m2_c2_wu_integrate",
+      "work_type": "INTEGRATE",
+      "artifact_hash": "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5"
+    },
+    {
+      "run_id": "run_08120098599d415f",
+      "status": "SUCCEEDED",
+      "result": {
+        "acceptance_evidence": [
+          {
+            "artifact_hash": "2b78a25a392ae212a8d00f3c1dfee3bd6d9b712295569de11ffea2bb4818fa00",
+            "check": null,
+            "criterion_id": "c1",
+            "verdict": "PASS"
+          }
+        ],
+        "artifact_refs": [
+          "2b78a25a392ae212a8d00f3c1dfee3bd6d9b712295569de11ffea2bb4818fa00"
+        ],
+        "blocked_marker_asserted": false,
+        "marker": null,
+        "outcome": "COMPLETED",
+        "published_paths": [
+          "verify.md"
+        ],
+        "summary": "The integrated deliverable `delivered/m2_c2_wu_integrate.md` was read at the exact path, confirmed to exist and to mention both \"alpha\" and \"beta\". verify.md was written with an explicit PASS verdict and published.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"2b78a25a392ae212a8d00f3c1dfee3bd6d9b712295569de11ffea2bb4818fa00\",\"verdict\":\"PASS\"}]}",
+        "verdict": "PASS"
+      },
+      "work_unit_id": "m2_c2_wu_verify",
+      "work_type": "VERIFY",
+      "artifact_hash": "2b78a25a392ae212a8d00f3c1dfee3bd6d9b712295569de11ffea2bb4818fa00"
+    }
+  ],
+  "publish_hashes": [
+    "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22",
+    "a34dadb47afdc361c378d653fd1346ca22946c858442f7a313e254c2e1252346",
+    "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5",
+    "2b78a25a392ae212a8d00f3c1dfee3bd6d9b712295569de11ffea2bb4818fa00"
+  ],
+  "terminal": "COMPLETED",
+  "ok": true,
+  "inject_required": true,
+  "dependency_deliveries": [
+    {
+      "from": "m2_c2_wu_edit_a",
+      "to": "m2_c2_wu_integrate",
+      "file": "m2_c2_wu_edit_a.md",
+      "artifact_hash": "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22",
+      "bytes": 49
+    },
+    {
+      "from": "m2_c2_wu_edit_b",
+      "to": "m2_c2_wu_integrate",
+      "file": "m2_c2_wu_edit_b.md",
+      "artifact_hash": "a34dadb47afdc361c378d653fd1346ca22946c858442f7a313e254c2e1252346",
+      "bytes": 37
+    },
+    {
+      "from": "m2_c2_wu_integrate",
+      "to": "m2_c2_wu_verify",
+      "file": "delivered/m2_c2_wu_integrate.md",
+      "artifact_hash": "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5",
+      "bytes": 115
+    }
+  ],
+  "integrate_artifact_hash": "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5",
+  "inject_triggered": false,
+  "notes": [
+    "inject_fail_repair requested but the model returned PASS for VERIFY; the FAIL\u2192REPAIR path was not exercised in this run (all VERIFY Runs reported PASS)"
+  ],
+  "failures": [],
+  "done_work_units": [
+    "m2_c2_wu_edit_a",
+    "m2_c2_wu_edit_b",
+    "m2_c2_wu_integrate",
+    "m2_c2_wu_verify"
+  ],
+  "missing_work_units": [],
+  "verify_pass_work_units": [
+    "m2_c2_wu_verify"
+  ],
+  "artifact_count": 4,
+  "unbacked_artifacts": [],
+  "unverified_artifact_content": [],
+  "artifact_binding_ok": true,
+  "artifact_binding": {
+    "pinned": [],
+    "integrate_work_unit": "m2_c2_wu_integrate",
+    "integrate_verified_artifact_hash": "bc303cfa0155e46c2669ecf1547811eb23e9903fbe1ca2c64ec086f3034a91a5",
+    "verify_work_units": [
+      "m2_c2_wu_verify"
+    ],
+    "verify_pass_work_units": [
+      "m2_c2_wu_verify"
+    ],
+    "integrate_content_backed": true
+  },
+  "unconfirmed_runs": [],
+  "planned_nodes": 4,
+  "mode": "live"
+}

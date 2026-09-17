@@ -1,0 +1,251 @@
+{
+  "iterations": 20,
+  "ok": true,
+  "passed": 20,
+  "duplicate_runs": [],
+  "pass_gate_bypasses": [],
+  "failed_iterations": [],
+  "repair_iterations": 20,
+  "results": [
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_59e82b2bd2d54626"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 0,
+      "task_id": "task_933719c5da6049cc",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_ed77694169a84d1c"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 1,
+      "task_id": "task_ac07867d2439458a",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_6213057c6b5841e4"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 2,
+      "task_id": "task_4ec5a6d159674540",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_aeb1f8a6c12a48ec"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 3,
+      "task_id": "task_2eaf672c38ba4b83",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_ca9b072349d143b5"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 4,
+      "task_id": "task_5a8b5d23770a40fe",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_b09c33091ec64efa"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 5,
+      "task_id": "task_1de3b55e9b8d4559",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_51a6a315c5e249bc"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 6,
+      "task_id": "task_e18d2e65eddc4ea8",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_7563847f68e64211"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 7,
+      "task_id": "task_c9a508e369334fea",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_d3b2f57f7a564ff3"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 8,
+      "task_id": "task_27c3869117a048d4",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_5cc70848bdf74f5e"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 9,
+      "task_id": "task_f75b31c59b9d41c1",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_bfe74cc91f2c4623"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 10,
+      "task_id": "task_b62f2b9bd7a64eba",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_f00d421f7ec2493f"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 11,
+      "task_id": "task_4ad8fc908e164691",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_848e40c5d7c44672"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 12,
+      "task_id": "task_5e671d5df5824d3e",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_c995667a75814da0"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 13,
+      "task_id": "task_c5173227ee0b4175",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_e290275d15e248e4"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 14,
+      "task_id": "task_f078c4287f9740ba",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_a10adea8c62b4394"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 15,
+      "task_id": "task_cb875e1ce85740ff",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_8bf260232e2d48fb"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 16,
+      "task_id": "task_6f4b09bdf84d4701",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_7a97eec454af49ac"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 17,
+      "task_id": "task_85fb7d358eb543a7",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_451737c16d00402f"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 18,
+      "task_id": "task_1fbffcd067f74a8e",
+      "repair_executed": true,
+      "artifact_count": 5
+    },
+    {
+      "duplicate_work_units": [],
+      "verify_pass_work_units": [
+        "wu_0fefef272dd14d98"
+      ],
+      "pass_gate_bypassed": false,
+      "ok": true,
+      "index": 19,
+      "task_id": "task_8985ad865b964c75",
+      "repair_executed": true,
+      "artifact_count": 5
+    }
+  ]
+}

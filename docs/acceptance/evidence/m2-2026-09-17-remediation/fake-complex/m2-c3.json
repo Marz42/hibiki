@@ -1,0 +1,147 @@
+{
+  "task_def": "m2-c3",
+  "task_id": "task_15d27622542d4a0a",
+  "plan_version": 1,
+  "runs": [
+    {
+      "run_id": "run_23a4a61e21134caf",
+      "work_unit_id": "m2_c3_wu_conv1",
+      "work_type": "EXECUTE",
+      "publish": {
+        "path": "result.md",
+        "published": true,
+        "artifact_hash": "604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00",
+        "uri": "artifact://604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00"
+      },
+      "artifact_hash": "604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00"
+        ],
+        "verified_artifact_refs": [
+          "604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00"
+        ]
+      }
+    },
+    {
+      "run_id": "run_2f33558980d241dd",
+      "work_unit_id": "m2_c3_wu_conv2",
+      "work_type": "EXECUTE",
+      "publish": {
+        "path": "result.md",
+        "published": true,
+        "artifact_hash": "35fc53cdfb4f39fa865486530e33fc02664ef0801b87b5ebf21b9ecd9781d6d7",
+        "uri": "artifact://35fc53cdfb4f39fa865486530e33fc02664ef0801b87b5ebf21b9ecd9781d6d7"
+      },
+      "artifact_hash": "35fc53cdfb4f39fa865486530e33fc02664ef0801b87b5ebf21b9ecd9781d6d7",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "35fc53cdfb4f39fa865486530e33fc02664ef0801b87b5ebf21b9ecd9781d6d7"
+        ],
+        "verified_artifact_refs": [
+          "35fc53cdfb4f39fa865486530e33fc02664ef0801b87b5ebf21b9ecd9781d6d7"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    },
+    {
+      "run_id": "run_0ce3d569778e457a",
+      "work_unit_id": "m2_c3_wu_integrate",
+      "work_type": "INTEGRATE",
+      "publish": {
+        "path": "result.md",
+        "published": true,
+        "artifact_hash": "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491",
+        "uri": "artifact://e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491"
+      },
+      "artifact_hash": "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491"
+        ],
+        "verified_artifact_refs": [
+          "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    },
+    {
+      "run_id": "run_34f87e6823704221",
+      "work_unit_id": "m2_c3_wu_verify",
+      "work_type": "VERIFY",
+      "publish": {
+        "path": "verify.md",
+        "published": true,
+        "artifact_hash": "b72bee67382a9095537d899c8bbd1f997a9d9ba70414265ac2ab92293ddc966e",
+        "uri": "artifact://b72bee67382a9095537d899c8bbd1f997a9d9ba70414265ac2ab92293ddc966e"
+      },
+      "artifact_hash": "b72bee67382a9095537d899c8bbd1f997a9d9ba70414265ac2ab92293ddc966e",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "b72bee67382a9095537d899c8bbd1f997a9d9ba70414265ac2ab92293ddc966e"
+        ],
+        "verified_artifact_refs": [
+          "b72bee67382a9095537d899c8bbd1f997a9d9ba70414265ac2ab92293ddc966e"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    }
+  ],
+  "publish_hashes": [
+    "604519035dbc47bceff4923f72081333e3eb2c18e9d2e0204fb85da6bc739f00",
+    "35fc53cdfb4f39fa865486530e33fc02664ef0801b87b5ebf21b9ecd9781d6d7",
+    "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491",
+    "b72bee67382a9095537d899c8bbd1f997a9d9ba70414265ac2ab92293ddc966e"
+  ],
+  "terminal": "COMPLETED",
+  "ok": true,
+  "inject_required": false,
+  "integrate_artifact_hash": "e8273a8ff5a1dd7e68b50548bcc5d188fa53edf2867986eeb204979a36368491",
+  "failures": [],
+  "done_work_units": [
+    "m2_c3_wu_conv1",
+    "m2_c3_wu_conv2",
+    "m2_c3_wu_integrate",
+    "m2_c3_wu_verify"
+  ],
+  "missing_work_units": [],
+  "verify_pass_work_units": [
+    "m2_c3_wu_verify"
+  ],
+  "artifact_count": 4,
+  "unbacked_artifacts": [],
+  "unverified_artifact_content": [],
+  "artifact_binding_ok": true,
+  "unconfirmed_runs": [],
+  "planned_nodes": 4,
+  "mode": "dry-run"
+}

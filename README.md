@@ -28,8 +28,13 @@ See `HIBIKI_MVP_SPEC_v0.2.1.md` and `docs/adr/`.
   artifact verified). Evidence under `docs/acceptance/evidence/m1-2026-09-13/`; the executable
   plan is [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
 - **M2 §24.5**: [`docs/acceptance/M2-2026-09-17.md`](docs/acceptance/M2-2026-09-17.md) —
-  **PENDING** (adversarial review of `1eb2477` found blocking P1s; not frozen for M3).
-  Checklist: [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md).
+  **PASS** for G1–G6. The Fake gate passes after two remediation rounds (c1/c2/c3 3/3 with
+  a real FAIL→REPAIR→new-VERIFY, G4 ×20 with zero duplicate runs and zero PASS-gate
+  bypasses; `docs/acceptance/evidence/m2-2026-09-17-remediation/`). The live gate ran three
+  real complex tasks on `deepseek-flash` through the Docker sandbox and **all three
+  completed** (`docs/acceptance/evidence/m2-2026-09-17-live/`). Remaining limits are
+  recorded in [`docs/M2-KNOWN-GAPS.md`](docs/M2-KNOWN-GAPS.md); checklist:
+  [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md).
 
 ### Running the M1 live-model gate
 
@@ -50,14 +55,24 @@ Without credentials, `--dry-run` exercises the same path and never reports a pas
 ### Running the M2 complex Fake / live harness
 
 ```bash
+# Fake G1-G5 gate (c1/c2/c3). Exits non-zero unless every Task's gate passes.
 uv run --no-sync python -m hibiki.interfaces.m2_runner --dry-run --clean \
-  --data-dir /tmp/hibiki-m2 --out docs/acceptance/evidence/m2-harness-smoke
+  --data-dir /tmp/hibiki-m2 --out docs/acceptance/evidence/m2-<date>/fake-complex
+
+# G4: the same Fake complex scenario 20x, checking duplicate-run and PASS-bypass invariants.
+uv run --no-sync python -m hibiki.interfaces.m2_runner --dry-run --clean --repeat 20 \
+  --data-dir /tmp/hibiki-m2-g4 --out docs/acceptance/evidence/m2-<date>/g4-x20
+
+# Live G6 (requires a provider key and the Docker sandbox).
 uv run --no-sync python -m hibiki.interfaces.m2_runner --live --clean \
   --data-dir /tmp/hibiki-m2 --out docs/acceptance/evidence/m2-<date>/live-runs
 ```
 
-The suite runs offline on Fake adapters only; set `UV_CACHE_DIR` to a writable path when the
-default uv cache is not accessible:
+The Fake path publishes real, content-backed artifacts, so the `VERDICT_PASS` edge binds a
+genuine digest and c2's FAIL→REPAIR→new-VERIFY path executes. `summary.json` counts gate
+passes (not Run rows) and the process exits non-zero when any Task fails its gate. The suite
+runs offline on Fake adapters only; set `UV_CACHE_DIR` to a writable path when the default uv
+cache is not accessible:
 
 ```bash
 UV_CACHE_DIR=/tmp/hibiki-uv-cache uv sync

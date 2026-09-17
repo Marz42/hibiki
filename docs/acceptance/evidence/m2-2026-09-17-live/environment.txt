@@ -1,0 +1,10 @@
+date_utc: 2026-09-17T14:25:55Z
+git_head: 89325333bbd97e83b98e4f80bcdef67c1a5e3684
+git_head_subject: Fix M2 review P1s: bind planner generation, keep VERIFY FAIL, and tighten auth/stop/harness gates.
+working_tree: 12 modified/untracked paths
+python: Python 3.12.12
+docker_server: 28.5.1
+sandbox_image: hibiki-sandbox:py312
+provider_model: deepseek-flash
+provider_base_url: https://api.deepseek.com
+gate: >=2 of 3 tasks COMPLETED (spec line 915)

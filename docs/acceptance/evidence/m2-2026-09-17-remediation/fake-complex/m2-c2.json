@@ -1,0 +1,217 @@
+{
+  "task_def": "m2-c2",
+  "task_id": "task_fccc95063ebf4b89",
+  "plan_version": 2,
+  "runs": [
+    {
+      "run_id": "run_471d687ae1a743c5",
+      "work_unit_id": "m2_c2_wu_edit_a",
+      "work_type": "EXECUTE",
+      "publish": {
+        "path": "edits/a.md",
+        "published": true,
+        "artifact_hash": "27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf",
+        "uri": "artifact://27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf"
+      },
+      "artifact_hash": "27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf"
+        ],
+        "verified_artifact_refs": [
+          "27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf"
+        ]
+      }
+    },
+    {
+      "run_id": "run_5fe7545d13824414",
+      "work_unit_id": "m2_c2_wu_edit_b",
+      "work_type": "EXECUTE",
+      "publish": {
+        "path": "edits/b.md",
+        "published": true,
+        "artifact_hash": "7155e8c1ce7e0d44d77eb9abe993cb84331612373541fa1c1605226791e3194b",
+        "uri": "artifact://7155e8c1ce7e0d44d77eb9abe993cb84331612373541fa1c1605226791e3194b"
+      },
+      "artifact_hash": "7155e8c1ce7e0d44d77eb9abe993cb84331612373541fa1c1605226791e3194b",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "7155e8c1ce7e0d44d77eb9abe993cb84331612373541fa1c1605226791e3194b"
+        ],
+        "verified_artifact_refs": [
+          "7155e8c1ce7e0d44d77eb9abe993cb84331612373541fa1c1605226791e3194b"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    },
+    {
+      "run_id": "run_4cc9d9cca1894180",
+      "work_unit_id": "m2_c2_wu_integrate",
+      "work_type": "INTEGRATE",
+      "publish": {
+        "path": "catalog.md",
+        "published": true,
+        "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+        "uri": "artifact://35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d"
+      },
+      "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d"
+        ],
+        "verified_artifact_refs": [
+          "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    },
+    {
+      "run_id": "run_f1068c4da6084d3f",
+      "work_unit_id": "m2_c2_wu_verify",
+      "work_type": "VERIFY",
+      "publish": {
+        "path": "verify.md",
+        "published": true,
+        "artifact_hash": "fdbf1ed035adac6ac33e9a17db8c6f3a9e7df184c9f4f866630c96d5560e4319",
+        "uri": "artifact://fdbf1ed035adac6ac33e9a17db8c6f3a9e7df184c9f4f866630c96d5560e4319"
+      },
+      "artifact_hash": "fdbf1ed035adac6ac33e9a17db8c6f3a9e7df184c9f4f866630c96d5560e4319",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "FAIL",
+        "artifact_refs": [
+          "fdbf1ed035adac6ac33e9a17db8c6f3a9e7df184c9f4f866630c96d5560e4319"
+        ],
+        "verified_artifact_refs": [
+          "fdbf1ed035adac6ac33e9a17db8c6f3a9e7df184c9f4f866630c96d5560e4319"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+            "verdict": "FAIL",
+            "check": "fake_harness_inject"
+          }
+        ]
+      }
+    },
+    {
+      "run_id": "run_37b4af36c858485a",
+      "work_unit_id": "wu_ca4355d0b99d41a3",
+      "work_type": "REPAIR",
+      "publish": {
+        "path": "catalog.md",
+        "published": true,
+        "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+        "uri": "artifact://35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d"
+      },
+      "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d"
+        ],
+        "verified_artifact_refs": [
+          "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    },
+    {
+      "run_id": "run_a1e0ef0868eb42c5",
+      "work_unit_id": "wu_c4fcc22f37014ab4",
+      "work_type": "VERIFY",
+      "publish": {
+        "path": "verify.md",
+        "published": true,
+        "artifact_hash": "3134d1d3af28a66adc6d121e9830019fe522e27242447e649f8f88b0f104888d",
+        "uri": "artifact://3134d1d3af28a66adc6d121e9830019fe522e27242447e649f8f88b0f104888d"
+      },
+      "artifact_hash": "3134d1d3af28a66adc6d121e9830019fe522e27242447e649f8f88b0f104888d",
+      "result": {
+        "outcome": "COMPLETED",
+        "verdict": "PASS",
+        "artifact_refs": [
+          "3134d1d3af28a66adc6d121e9830019fe522e27242447e649f8f88b0f104888d"
+        ],
+        "verified_artifact_refs": [
+          "3134d1d3af28a66adc6d121e9830019fe522e27242447e649f8f88b0f104888d"
+        ],
+        "acceptance_evidence": [
+          {
+            "criterion_id": "c1",
+            "artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+            "verdict": "PASS",
+            "check": "fake_harness"
+          }
+        ]
+      }
+    }
+  ],
+  "publish_hashes": [
+    "27a690f1aff760128b7800e27252d92b2d22ca400429561da4417576ec274daf",
+    "7155e8c1ce7e0d44d77eb9abe993cb84331612373541fa1c1605226791e3194b",
+    "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+    "fdbf1ed035adac6ac33e9a17db8c6f3a9e7df184c9f4f866630c96d5560e4319",
+    "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+    "3134d1d3af28a66adc6d121e9830019fe522e27242447e649f8f88b0f104888d"
+  ],
+  "terminal": "COMPLETED",
+  "ok": true,
+  "inject_required": true,
+  "integrate_artifact_hash": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+  "injected_fail_work_unit": "m2_c2_wu_verify",
+  "injected_fail_artifact": "35f90f2de0ff58edefa1a4b98eab9d6d415a9729848ae4dc1c185f7cd027e38d",
+  "repair": {
+    "ok": true,
+    "error": null,
+    "plan_version": 2
+  },
+  "failures": [],
+  "done_work_units": [
+    "m2_c2_wu_edit_a",
+    "m2_c2_wu_edit_b",
+    "m2_c2_wu_integrate",
+    "wu_ca4355d0b99d41a3",
+    "wu_c4fcc22f37014ab4"
+  ],
+  "missing_work_units": [],
+  "verify_pass_work_units": [
+    "wu_c4fcc22f37014ab4"
+  ],
+  "artifact_count": 5,
+  "unbacked_artifacts": [],
+  "unverified_artifact_content": [],
+  "artifact_binding_ok": true,
+  "unconfirmed_runs": [],
+  "planned_nodes": 5,
+  "mode": "dry-run"
+}
