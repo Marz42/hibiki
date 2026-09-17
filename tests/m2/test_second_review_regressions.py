@@ -21,7 +21,13 @@ from hibiki.domain.types import AuthContext
 from hibiki.persistence.models import PlannerSessionRow, WorkspaceRow
 from hibiki.runtime.api_agent import _parse_explicit_result
 from hibiki.runtime.fake_planner import FakePlannerAdapter
-from tests.helpers import human_auth, make_core, run_auth, submit_result_and_exit
+from tests.helpers import (
+    approve_flow,
+    human_auth,
+    make_core,
+    run_auth,
+    submit_result_and_exit,
+)
 
 # --------------------------------------------------------------------------- #
 # P1 #3 — structured result parsing
@@ -465,4 +471,127 @@ def test_pending_claim_does_not_quarantine_but_unconfirmed_exit_does(
     ws = _workspace(svc, "ws_shared")
     assert ws["state"] == WorkspaceState.QUARANTINED
     assert ws["writer_alive"] is True
+    ctx["lock"].release()
+
+
+# --------------------------------------------------------------------------- #
+# Third-review P1s — found after the live gate passed
+# --------------------------------------------------------------------------- #
+
+
+def test_shell_exit_does_not_release_workspace_while_run_is_live(
+    tmp_path: Path,
+) -> None:
+    """A confirmed *container* exit is not a finished Run (SPEC §11.1, third review P1).
+
+    Clearing Workspace ownership on a single shell exit let a second Run start on the
+    same Workspace while the first was still RUNNING: two concurrent writers.
+    """
+    from hibiki.application.bootstrap import bootstrap_core
+    from hibiki.runtime.fake_agent import FakeAgentAdapter
+
+    svc, ctx = bootstrap_core(tmp_path, agent=FakeAgentAdapter(), fake_time=False)
+    auth = human_auth()
+    task_id, _ = approve_flow(svc, auth, title="shared-ws-single-writer")
+    r = svc.execute(
+        "activate_plan",
+        auth,
+        {
+            "task_id": task_id,
+            "nodes": [
+                {"work_unit_id": "wu_a", "spec_version": 1, "workspace_id": "ws_shared"},
+                {"work_unit_id": "wu_b", "spec_version": 1, "workspace_id": "ws_shared"},
+            ],
+            "edges": [],
+        },
+    )
+    assert r.ok, r
+    d1 = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
+    assert d1.ok and d1.data["created_runs"], d1
+    run_a = d1.data["created_runs"][0]
+    svc.drain_outbox()
+    worker = run_auth(svc, run_a)
+
+    # One shell command finishes while run_a keeps running.
+    reg = svc.execute(
+        "register_sandbox_identity",
+        worker,
+        {
+            "run_id": run_a,
+            "fencing_epoch": worker.bound_fencing_epoch,
+            "container_id": "container-1",
+            "exit_confirmed": True,
+        },
+    )
+    assert reg.ok, reg
+    ws = _workspace(svc, "ws_shared")
+    assert ws["owner_run_id"] == run_a, (
+        "a single container exit released the Workspace of a still-running Run"
+    )
+    assert ws["state"] != WorkspaceState.READY
+
+    # No second writer may be scheduled on that Workspace.
+    d2 = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
+    assert d2.ok, d2
+    assert d2.data["created_runs"] == [], (
+        "two Runs shared one Workspace while the owner Run was RUNNING"
+    )
+
+    # Once the Run actually finishes, the Workspace is released for the next writer.
+    submit_result_and_exit(
+        svc, auth, run_a, result={"outcome": "COMPLETED", "verdict": "PASS", "artifact_refs": []}
+    )
+    released = _workspace(svc, "ws_shared")
+    assert released["state"] == WorkspaceState.READY
+    assert released["owner_run_id"] is None
+    d3 = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
+    assert d3.ok and d3.data["created_runs"], d3
+    ctx["lock"].release()
+
+
+def test_core_refuses_unpinned_verdict_pass_without_an_opt_out(
+    tmp_path: Path,
+) -> None:
+    """SPEC §6.1 is unconditional: no caller switch may disable the hash requirement.
+
+    Third review P1: `require_verdict_artifact_hash=False` made the Core accept a plan it
+    must reject, and a harness-side check cannot restore a Core constraint.
+    """
+    from hibiki.runtime.fake_planner import FakePlannerAdapter
+
+    planner = FakePlannerAdapter()
+    svc, ctx, auth, task_id = _complex_task(planner, tmp_path)
+    planner.bind_core(svc)
+    r = svc.execute("dispatch_planner_run", auth, {"task_id": task_id})
+    assert r.ok, r
+    svc.drain_outbox()
+    planner_auth = run_auth(svc, r.data["run_id"])
+
+    payload = {
+        "task_id": task_id,
+        "generation": r.data["generation"],
+        "nodes": [
+            {"work_unit_id": "wu_a", "spec_version": 1, "work_type": "EXECUTE"},
+            {"work_unit_id": "wu_v", "spec_version": 1, "work_type": "VERIFY"},
+        ],
+        "edges": [
+            {
+                "from_work_unit_id": "wu_a",
+                "to_work_unit_id": "wu_v",
+                "predicate": "VERDICT_PASS",
+            }
+        ],
+    }
+    plain = svc.execute("submit_plan_proposal", planner_auth, dict(payload))
+    assert not plain.ok
+    assert plain.error_code == "plan_missing_artifact_hash"
+
+    # The old opt-out must be inert.
+    opted_out = svc.execute(
+        "submit_plan_proposal",
+        planner_auth,
+        {**payload, "require_verdict_artifact_hash": False},
+    )
+    assert not opted_out.ok, "the Core accepted an unpinned VERDICT_PASS plan"
+    assert opted_out.error_code == "plan_missing_artifact_hash"
     ctx["lock"].release()
