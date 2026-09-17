@@ -4,10 +4,35 @@
   "objective": "Two workers summarize different attachments in parallel; integrate into one report; verify structure.",
   "topology": {
     "nodes": [
-      {"work_unit_id": "wu_left", "work_type": "EXECUTE", "spec_version": 1},
-      {"work_unit_id": "wu_right", "work_type": "EXECUTE", "spec_version": 1},
-      {"work_unit_id": "wu_integrate", "work_type": "INTEGRATE", "spec_version": 1},
-      {"work_unit_id": "wu_verify", "work_type": "VERIFY", "spec_version": 1}
+      {
+        "work_unit_id": "wu_left",
+        "work_type": "EXECUTE",
+        "spec_version": 1,
+        "objective": "Summarize only attachments/left.txt into left_summary.md; do not touch right.",
+        "input_refs": ["attachments/left.txt"],
+        "expected_outputs": ["left_summary.md"]
+      },
+      {
+        "work_unit_id": "wu_right",
+        "work_type": "EXECUTE",
+        "spec_version": 1,
+        "objective": "Summarize only attachments/right.txt into right_summary.md; do not touch left.",
+        "input_refs": ["attachments/right.txt"],
+        "expected_outputs": ["right_summary.md"]
+      },
+      {
+        "work_unit_id": "wu_integrate",
+        "work_type": "INTEGRATE",
+        "spec_version": 1,
+        "objective": "Merge left_summary.md and right_summary.md into report.md and publish it.",
+        "expected_outputs": ["report.md"]
+      },
+      {
+        "work_unit_id": "wu_verify",
+        "work_type": "VERIFY",
+        "spec_version": 1,
+        "objective": "Verify report.md exists and meets acceptance; return COMPLETED with FAIL or PASS explicitly."
+      }
     ],
     "edges": [
       {"from_work_unit_id": "wu_left", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},

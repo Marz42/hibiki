@@ -1,6 +1,6 @@
 # M2 Execution Checklist — Planner / DAG / Integration (§24.5)
 
-Status: **PASS** (G1–G6 met 2026-09-17; live G6 3/3 on deepseek-flash)
+Status: **PENDING** (adversarial review of `1eb2477`; G6 “3/3” withdrawn — not frozen for M3)
 Spec: `HIBIKI_MVP_SPEC_v0.2.1.md` §24.5, with §5–9 / §11 / §12.3 / §16–17 / §20 / §27
 Prior milestones: M0 PASS (`docs/acceptance/M0-2026-09-13.md`), M1 PASS (`docs/acceptance/M1-2026-09-13.md`)
 Design rules: `docs/adr/0001-tech-stack-m0.md`, `docs/adr/0002-known-limits-m0.md` (in-process Core carried forward)
@@ -189,3 +189,5 @@ must land before K.
 | 2026-09-17 | **L partial**: acceptance record `docs/acceptance/M2-2026-09-17.md` — G1–G5 PASS; G6 live run recorded **0/3** PASS (`workspace_missing` + Docker Desktop down). |
 | 2026-09-17 | **m2_runner**: load `.env` with M1 `HIBIKI_MODEL_*` names; live routes PLAN→FakePlanner / EXECUTE→ApiAgentAdapter. |
 | 2026-09-17 | **G6 retry PASS 3/3**: Docker up; workspace seeding; Windows `WorkspacePaths` path-mode; clearer c2/c3 objectives. Live evidence refreshed. |
+| 2026-09-17 | **Review of `1eb2477`**: acceptance reverted to **PENDING**. Blocking P1s: cross-principal orchestration, VERIFY FAIL→PASS rewrite, unconfirmed stop, unwired Planner recovery, discarded WorkUnit assignment, weak harness gate. |
+| 2026-09-17 | **Remediation landed (code)**: orchestration Human+principal; PLAN generation bump revokes prior PLAN Run; VERIFY keeps COMPLETED+FAIL; unconfirmed stop/Docker query_failed; PLAN RunInput/messages; WorkUnit objective/input_refs frozen; harness DAG/artifact gate + VERDICT_PASS; truncated ContextAppend + seed parents. Regression: `tests/m2/test_review_regressions.py`. Full live G6 re-acceptance still required before PASS. |

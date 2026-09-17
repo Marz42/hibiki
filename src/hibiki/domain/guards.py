@@ -34,6 +34,28 @@ INTERNAL_ONLY_OPS = frozenset(
 # Exit confirm: Human (principal) or Internal (run-bound); never User Agent
 EXIT_CONFIRM_OPS = frozenset({"confirm_run_exit"})
 
+# Task-scoped orchestration: Human principal only (Workers may not dispatch)
+HUMAN_TASK_ORCHESTRATION_OPS = frozenset(
+    {
+        "dispatch_ready_runs",
+        "activate_plan",
+        "activate_minimal_plan",
+        "dispatch_planner_run",
+        "replace_planner_generation",
+        "request_repair_plan",
+        "close_planner_session",
+        "request_spawn",
+    }
+)
+
+# Planner-bound Internal writes (or Human owner)
+PLANNER_BOUND_OPS = frozenset(
+    {
+        "submit_plan_proposal",
+        "advance_planner_checkpoint",
+    }
+)
+
 
 HUMAN_DECISION_KINDS = frozenset(
     {
@@ -82,12 +104,20 @@ def require_exit_confirm_actor(auth: AuthContext, operation: str) -> None:
 def guard_operation(auth: AuthContext, operation: str) -> None:
     if operation in HUMAN_ONLY_OPS:
         require_human(auth, operation)
+    elif operation in HUMAN_TASK_ORCHESTRATION_OPS:
+        require_human(auth, operation)
     elif operation in INTERRUPT_OPS:
         require_interrupt_scope(auth, operation)
     elif operation in INTERNAL_ONLY_OPS:
         require_internal(auth, operation)
     elif operation in EXIT_CONFIRM_OPS:
         require_exit_confirm_actor(auth, operation)
+    elif operation in PLANNER_BOUND_OPS:
+        if auth.actor_type not in {ActorType.HUMAN, ActorType.INTERNAL}:
+            raise AuthorizationError(
+                f"operation {operation!r} requires Human or Internal actor",
+                code="authorization_denied",
+            )
 
 
 def guard_human_decision(auth: AuthContext, kind: DecisionKind | str) -> None:

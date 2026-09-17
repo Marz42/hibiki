@@ -9,17 +9,77 @@ from hibiki.runtime.fake_agent import FakeAgentAdapter
 
 
 class FakePlannerAdapter(FakeAgentAdapter):
-    """Same lifecycle surface as FakeAgentAdapter; records PLAN starts."""
+    """Same lifecycle surface as FakeAgentAdapter; records PLAN starts and message drains.
+
+    Real proposal loops still belong to the Harness/Core in Fake mode, but the
+    adapter now surfaces RunInput/checkpoint fields and can advance the message
+    cursor so Planner recovery is exercisable without a live model.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.plan_started: list[str] = []
+        self.consumed_sequences: dict[str, int] = {}
+        self._core: Any | None = None
+
+    def bind_core(self, core: Any) -> None:
+        """Optional Core handle for cursor consumption during PLAN start."""
+        self._core = core
 
     def start(self, run_spec: dict[str, Any]) -> dict[str, Any]:
         result = super().start(run_spec)
         if result.get("alive") and run_spec.get("assignment_kind") == "PLAN":
-            self.plan_started.append(run_spec["run_id"])
+            run_id = run_spec["run_id"]
+            self.plan_started.append(run_id)
+            self._maybe_consume_messages(run_spec)
         return result
+
+    def _maybe_consume_messages(self, run_spec: dict[str, Any]) -> None:
+        core = self._core
+        if core is None:
+            return
+        task_id = run_spec.get("task_id")
+        run_id = run_spec.get("run_id")
+        generation = run_spec.get("generation")
+        if not task_id or not run_id:
+            return
+        try:
+            from hibiki.domain.enums import ActorType
+            from hibiki.domain.types import AuthContext
+
+            auth = AuthContext(
+                principal_id=str(run_spec.get("principal_id") or ""),
+                actor_id=str(run_spec.get("agent_instance_id") or f"planner:{run_id}"),
+                actor_type=ActorType.INTERNAL,
+                auth_context_id=f"run:{run_id}",
+                bound_task_id=str(task_id),
+                bound_run_id=str(run_id),
+                bound_fencing_epoch=int(run_spec.get("fencing_epoch") or 1),
+                bound_grant_epoch=int(run_spec.get("grant_epoch") or 0),
+            )
+            # Drain up to the current max sequence into a checkpoint advance.
+            messages = []
+            if hasattr(core, "list_task_messages"):
+                messages = list(core.list_task_messages(task_id) or [])
+            last_seq = max((int(m.get("sequence_no") or 0) for m in messages), default=0)
+            cursor = int(run_spec.get("last_consumed_message_seq") or 0)
+            if last_seq >= cursor:
+                advanced = core.execute(
+                    "advance_planner_checkpoint",
+                    auth,
+                    {
+                        "task_id": task_id,
+                        "run_id": run_id,
+                        "generation": generation,
+                        "fencing_epoch": run_spec.get("fencing_epoch"),
+                        "last_consumed_message_seq": last_seq,
+                        "checkpoint_ref": f"fake-ckpt:{run_id}:{last_seq}",
+                    },
+                )
+                if getattr(advanced, "ok", False):
+                    self.consumed_sequences[run_id] = last_seq
+        except Exception:  # noqa: BLE001 — Fake recovery assist must not break start
+            return
 
 
 class BarrierFakeAgentAdapter(FakeAgentAdapter):

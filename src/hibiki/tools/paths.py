@@ -78,6 +78,7 @@ class WorkspacePaths:
             raise NotADirectoryError(errno.ENOTDIR, "workspace root is not a directory", raw)
         self._root = resolved
         self._path_mode = _PATH_MODE
+        self._closed = False
         self._root_fd: int | None
         if self._path_mode:
             self._root_fd = None
@@ -90,6 +91,7 @@ class WorkspacePaths:
         return self._root
 
     def close(self) -> None:
+        self._closed = True
         if self._root_fd is not None:
             os.close(self._root_fd)
             self._root_fd = None
@@ -100,12 +102,17 @@ class WorkspacePaths:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ValueError("WorkspacePaths is closed")
+
     # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
 
     def resolve_for_read(self, relative: str) -> str:
         """Return the absolute real path of a readable regular file inside root."""
+        self._ensure_open()
         if self._path_mode:
             path = self._path_resolve(relative, expect_dir=False)
             st = os.lstat(path)
@@ -127,6 +134,7 @@ class WorkspacePaths:
         return self._absolute(parts)
 
     def open_for_read(self, relative: str) -> BinaryIO:
+        self._ensure_open()
         if self._path_mode:
             path = self._path_resolve(relative, expect_dir=False)
             if _is_symlink_path(path):
@@ -152,6 +160,7 @@ class WorkspacePaths:
             raise
 
     def open_for_write(self, relative: str, *, mode: int = 0o644) -> BinaryIO:
+        self._ensure_open()
         if self._path_mode:
             path = self._path_resolve(relative, expect_dir=False, create_parents=True)
             if _is_symlink_path(path):
@@ -169,14 +178,7 @@ class WorkspacePaths:
         return os.fdopen(fd, "wb")
 
     def list_dir(self, relative: str) -> list[str]:
-        if relative in {".", ""}:
-            if self._path_mode:
-                return sorted(os.listdir(self._root))
-            fd = self._dup_root()
-            try:
-                return sorted(os.listdir(fd))
-            finally:
-                os.close(fd)
+        self._ensure_open()
         if self._path_mode:
             path = self._path_resolve(relative, expect_dir=True)
             return sorted(os.listdir(path))
@@ -193,6 +195,7 @@ class WorkspacePaths:
 
     def mkdir(self, relative: str) -> None:
         """Create ``relative`` as a directory, including missing parents."""
+        self._ensure_open()
         if self._path_mode:
             self._path_resolve(
                 relative, expect_dir=True, create_parents=True, create_leaf_dir=True
@@ -203,10 +206,11 @@ class WorkspacePaths:
         os.close(fd)
 
     def exists(self, relative: str) -> bool:
+        self._ensure_open()
         if self._path_mode:
             try:
                 path = self._path_resolve(relative, expect_dir=False)
-            except (FileNotFoundError, NotADirectoryError, PathSafetyError):
+            except (FileNotFoundError, NotADirectoryError):
                 return False
             if _is_symlink_path(path):
                 raise PathSafetyError(
@@ -251,6 +255,7 @@ class WorkspacePaths:
         The default mode is world-readable because the sandbox runs as uid 65534 and
         must be able to read the files the broker wrote into the workspace.
         """
+        self._ensure_open()
         if not isinstance(content, (bytes, bytearray, memoryview)):
             raise TypeError("content must be bytes-like")
         data = bytes(content)

@@ -4,10 +4,35 @@
   "objective": "Worker A: write edits/a.md with one short sentence about alpha. Worker B: write edits/b.md with one short sentence about beta. Integrate: merge both into catalog.md and publish it. Verify: confirm catalog.md exists and publish a one-line verify.md. Keep tool use minimal.",
   "topology": {
     "nodes": [
-      {"work_unit_id": "wu_edit_a", "work_type": "EXECUTE", "spec_version": 1},
-      {"work_unit_id": "wu_edit_b", "work_type": "EXECUTE", "spec_version": 1},
-      {"work_unit_id": "wu_integrate", "work_type": "INTEGRATE", "spec_version": 1},
-      {"work_unit_id": "wu_verify", "work_type": "VERIFY", "spec_version": 1}
+      {
+        "work_unit_id": "wu_edit_a",
+        "work_type": "EXECUTE",
+        "spec_version": 1,
+        "objective": "Only write edits/a.md with one short sentence about alpha. Do not edit beta or catalog.",
+        "input_refs": ["attachments/a.txt"],
+        "expected_outputs": ["edits/a.md"]
+      },
+      {
+        "work_unit_id": "wu_edit_b",
+        "work_type": "EXECUTE",
+        "spec_version": 1,
+        "objective": "Only write edits/b.md with one short sentence about beta. Do not edit alpha or catalog.",
+        "input_refs": ["attachments/b.txt"],
+        "expected_outputs": ["edits/b.md"]
+      },
+      {
+        "work_unit_id": "wu_integrate",
+        "work_type": "INTEGRATE",
+        "spec_version": 1,
+        "objective": "Merge edits/a.md and edits/b.md into catalog.md and publish it.",
+        "expected_outputs": ["catalog.md"]
+      },
+      {
+        "work_unit_id": "wu_verify",
+        "work_type": "VERIFY",
+        "spec_version": 1,
+        "objective": "Confirm catalog.md exists; emit an explicit COMPLETED+PASS or COMPLETED+FAIL verdict."
+      }
     ],
     "edges": [
       {"from_work_unit_id": "wu_edit_a", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},

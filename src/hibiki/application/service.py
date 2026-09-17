@@ -477,6 +477,12 @@ class ApplicationService:
             supplied = row.task_id
         return supplied
 
+    def _assert_task_principal(self, auth: AuthContext, task: TaskRow) -> None:
+        if auth.principal_id != task.principal_id:
+            raise AuthorizationError(
+                "task principal mismatch", code="authorization_denied"
+            )
+
     def _authorize_run_command(
         self, session: Session, operation: str, auth: AuthContext, payload: dict[str, Any]
     ) -> None:
@@ -1517,6 +1523,7 @@ class ApplicationService:
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         contract = self._active_contract(session, task.task_id)
         if contract is None:
             raise PreconditionError("no ACTIVE contract", code="no_active_contract")
@@ -1538,6 +1545,7 @@ class ApplicationService:
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         contract = self._active_contract(session, task.task_id)
         if contract is None:
             raise PreconditionError("no ACTIVE contract", code="no_active_contract")
@@ -1649,18 +1657,22 @@ class ApplicationService:
             n_raw = raw_by_id.get(n.work_unit_id) or {}
             exec_existing = session.get(WorkUnitExecutionRow, n.work_unit_id)
             spec = {
-                "objective": payload.get("objective") or task.title,
+                "objective": (
+                    n_raw.get("objective")
+                    or payload.get("objective")
+                    or task.title
+                ),
                 "work_type": n.work_type,
-                "context_policy": "FRESH",
-                "input_refs": [],
+                "context_policy": n_raw.get("context_policy") or "FRESH",
+                "input_refs": list(n_raw.get("input_refs") or []),
                 "expected_outputs": list(n_raw.get("expected_outputs") or []),
                 "acceptance_criteria": list(
                     n_raw.get("acceptance_criteria")
                     or (contract_content.get("acceptance_criteria") or [])
                 ),
-                "required_capabilities": [],
-                "requested_permissions": [],
-                "workspace_policy": "dedicated",
+                "required_capabilities": list(n_raw.get("required_capabilities") or []),
+                "requested_permissions": list(n_raw.get("requested_permissions") or []),
+                "workspace_policy": n_raw.get("workspace_policy") or "dedicated",
             }
             sh = content_hash(spec)
             existing = session.scalars(
@@ -1817,6 +1829,7 @@ class ApplicationService:
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         try:
             guard_dispatch(
                 task_state=TaskState(task.state),
@@ -2194,6 +2207,9 @@ class ApplicationService:
             work_type=str(wu_content.get("work_type") or ""),
             goal_label=str(wu_content.get("work_type") or wu_objective),
             context_policy=str(wu_content.get("context_policy") or "FRESH"),
+            input_refs=tuple(
+                str(item) for item in (wu_content.get("input_refs") or []) if item
+            ),
             expected_outputs=expected_outputs,
             acceptance_criteria=acceptance_criteria,
             metadata={
@@ -2415,9 +2431,15 @@ class ApplicationService:
             materialized = digest
             size_bytes = len(content)
         elif run_input is not None and _looks_like_relative_path(ref):
+            max_bytes = payload.get("max_bytes")
+            max_bytes_i = int(max_bytes) if max_bytes is not None else None
             try:
                 content, digest = self._read_workspace_bytes(
-                    session, run, ref, workspace_id=run_input.workspace_id
+                    session,
+                    run,
+                    ref,
+                    workspace_id=run_input.workspace_id,
+                    max_bytes=max_bytes_i,
                 )
             except (PreconditionError, NotFoundError) as exc:
                 raise PreconditionError(
@@ -2774,6 +2796,38 @@ class ApplicationService:
         if run.assignment_kind == AssignmentKind.PLAN:
             # PLAN Runs have no workspace writer; free the session marker on result.
             self._clear_run_occupancy(session, run, release_workspace=True)
+
+        # Deliver worker/plan results into the Task message log for Planner recovery.
+        if not run.late_arrival:
+            next_seq = int(
+                session.scalars(
+                    select(func.max(TaskMessageRow.sequence_no)).where(
+                        TaskMessageRow.task_id == task.task_id
+                    )
+                ).one()
+                or 0
+            ) + 1
+            session.add(
+                TaskMessageRow(
+                    task_id=task.task_id,
+                    sequence_no=next_seq,
+                    sender_run_id=run.run_id,
+                    sender_actor=auth.actor_id,
+                    kind="worker.result"
+                    if run.assignment_kind == AssignmentKind.EXECUTE
+                    else "plan.result",
+                    body_json=canonical_json(
+                        {
+                            "run_id": run.run_id,
+                            "work_unit_id": run.work_unit_id,
+                            "outcome": outcome,
+                            "verdict": result.get("verdict"),
+                            "artifact_refs": result.get("artifact_refs") or [],
+                        }
+                    ),
+                    created_at=now,
+                )
+            )
 
         self._append_event(
             session,
@@ -4054,6 +4108,7 @@ class ApplicationService:
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         now = self.clock.now()
         session_id = task.active_planner_session_id or new_id("ps")
         existing = session.get(PlannerSessionRow, session_id)
@@ -4068,6 +4123,27 @@ class ApplicationService:
             task.active_planner_session_id = session_id
             generation = 1
         else:
+            # Revoke any live PLAN Run before the generation CAS advances so old
+            # credentials cannot bind to the new generation.
+            marker = session.get(ActivePlanRunMarker, session_id)
+            if marker is not None:
+                old_run = session.get(AgentRunRow, marker.run_id)
+                if old_run is not None and not is_terminal_run(
+                    AgentRunStatus(old_run.status)
+                ):
+                    old_run.status = AgentRunStatus.CANCELLED
+                    old_run.terminal_reason = "planner_generation_bumped"
+                    old_run.finished_at = now
+                    self._clear_run_occupancy(session, old_run, release_workspace=True)
+                    self._enqueue_stops_for_runs(
+                        session,
+                        task,
+                        [old_run.run_id],
+                        reason="planner_generation_bumped",
+                    )
+                else:
+                    session.delete(marker)
+            existing.active_run_id = None
             existing.generation = int(existing.generation or 0) + 1
             generation = existing.generation
         existing.checkpoint_version = int(existing.checkpoint_version or 0) + 1
@@ -4087,6 +4163,59 @@ class ApplicationService:
             }
         )
 
+    def _assert_planner_write_auth(
+        self,
+        session: Session,
+        auth: AuthContext,
+        task: TaskRow,
+        ps: PlannerSessionRow,
+        payload: dict[str, Any],
+    ) -> AgentRunRow | None:
+        """Human owner may propose; Internal must be the active PLAN Run for this generation."""
+        self._assert_task_principal(auth, task)
+        gen = int(payload.get("generation") or 0)
+        if gen != int(ps.generation):
+            self._append_event(
+                session,
+                task.task_id,
+                "plan.proposal_rejected_stale_generation",
+                auth_actor=auth.actor_id,
+                payload={"got": gen, "expected": ps.generation},
+            )
+            raise ConflictError(
+                "stale planner generation",
+                code="stale_generation",
+            )
+        if auth.actor_type == ActorType.HUMAN:
+            return None
+        if auth.actor_type != ActorType.INTERNAL:
+            raise AuthorizationError(
+                "planner write requires Human or Internal actor",
+                code="authorization_denied",
+            )
+        if not ps.active_run_id or auth.bound_run_id != ps.active_run_id:
+            raise AuthorizationError(
+                "planner credential is not bound to the active PLAN run",
+                code="authorization_denied",
+            )
+        run = session.get(AgentRunRow, ps.active_run_id)
+        if run is None:
+            raise NotFoundError("plan run not found", code="run_not_found")
+        if run.assignment_kind != AssignmentKind.PLAN or run.planner_session_id != ps.planner_session_id:
+            raise PreconditionError("run is not the PLAN run", code="not_plan_run")
+        if is_terminal_run(AgentRunStatus(run.status)):
+            raise AuthorizationError(
+                "PLAN run is no longer active",
+                code="authorization_denied",
+            )
+        bind_payload = dict(payload)
+        bind_payload.setdefault("run_id", run.run_id)
+        bind_payload.setdefault("fencing_epoch", run.fencing_epoch)
+        self._assert_run_write_binding(
+            session, auth, run, bind_payload, require_fencing=False
+        )
+        return run
+
     def _submit_plan_proposal(
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
@@ -4096,20 +4225,20 @@ class ApplicationService:
             raise PreconditionError("no planner session", code="no_planner_session")
         ps = session.get(PlannerSessionRow, session_id)
         assert ps is not None
-        gen = int(payload.get("generation") or 0)
-        if gen != ps.generation:
-            self._append_event(
-                session,
-                task.task_id,
-                "plan.proposal_rejected_stale_generation",
-                auth_actor=auth.actor_id,
-                payload={"got": gen, "expected": ps.generation},
-            )
-            return CommandResult.failure(
-                "stale_generation",
-                "stale planner generation",
-                data={"got": gen, "expected": ps.generation, "task_id": task.task_id},
-            )
+        try:
+            self._assert_planner_write_auth(session, auth, task, ps, payload)
+        except ConflictError as exc:
+            if exc.code == "stale_generation":
+                return CommandResult.failure(
+                    "stale_generation",
+                    "stale planner generation",
+                    data={
+                        "got": int(payload.get("generation") or 0),
+                        "expected": ps.generation,
+                        "task_id": task.task_id,
+                    },
+                )
+            raise
         # Check if proposal tries to change authorization fields
         if payload.get("changes_authorization"):
             # Must go to contract delta — persist immutable baseline + target
@@ -4178,6 +4307,7 @@ class ApplicationService:
     ) -> CommandResult:
         """Create the public PLAN AgentRun for the Task's ACTIVE PlannerSession (§9.1)."""
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         try:
             guard_dispatch(
                 task_state=TaskState(task.state),
@@ -4252,6 +4382,96 @@ class ApplicationService:
         )
         session.add(run)
         session.flush()
+
+        # PLAN Runs need the same frozen RunInput + ContextManifest surface as
+        # EXECUTE so recovery can materialize checkpoint/cursor/messages.
+        _, resource_limits = self._contract_and_limits(session, task)
+        manifest_id = new_id("ctx")
+        contract = self._active_contract(session, task.task_id)
+        mandatory: list[dict[str, Any]] = []
+        if contract is not None:
+            mandatory.append(
+                {
+                    "kind": "contract",
+                    "ref": f"contract:{task.task_id}:v{contract.contract_version}",
+                    "version": contract.contract_version,
+                    "hash": contract.content_hash,
+                    "required": True,
+                }
+            )
+        manifest = {
+            "context_manifest_id": manifest_id,
+            "run_id": run_id,
+            "task_id": task.task_id,
+            "assignment_kind": AssignmentKind.PLAN,
+            "planner_session_id": session_id,
+            "generation": ps.generation,
+            "checkpoint_ref": ps.checkpoint_ref,
+            "checkpoint_version": ps.checkpoint_version,
+            "last_consumed_message_seq": ps.last_consumed_message_seq,
+            "mandatory": mandatory,
+            "optional": [],
+            "context_budget": {
+                "max_materialized_bytes": _int_or(
+                    resource_limits.get("context_max_materialized_bytes"),
+                    DEFAULTS.context_max_materialized_bytes,
+                )
+            },
+            "mandatory_bytes": 0,
+        }
+        mh = content_hash(manifest)
+        session.add(
+            ContextManifestRow(
+                context_manifest_id=manifest_id,
+                task_id=task.task_id,
+                run_id=run_id,
+                contract_version=int(task.contract_version or 0),
+                plan_version=task.plan_version,
+                content_json=canonical_json(manifest),
+                manifest_hash=mh,
+                created_at=now,
+            )
+        )
+        plan_spec = {
+            "run_id": run_id,
+            "task_id": task.task_id,
+            "assignment_kind": AssignmentKind.PLAN,
+            "objective": f"Plan task {task.title}",
+            "work_type": "PLAN",
+            "planner_session_id": session_id,
+            "generation": ps.generation,
+            "checkpoint_ref": ps.checkpoint_ref,
+            "checkpoint_version": ps.checkpoint_version,
+            "last_consumed_message_seq": ps.last_consumed_message_seq,
+            "context_manifest_id": manifest_id,
+            "context_manifest_hash": mh,
+            "fencing_epoch": fencing,
+            "agent_instance_id": run.agent_instance_id,
+            "principal_id": task.principal_id,
+            "grant_epoch": run.grant_epoch,
+            "granted_tools": [],
+            "permission_ceiling": {},
+            "profile_id": "planner",
+            "profile_version": 1,
+        }
+        session.add(
+            RunInputRow(
+                run_id=run_id,
+                task_id=task.task_id,
+                workspace_id=None,
+                workspace_path=None,
+                profile_id="planner",
+                profile_version=1,
+                granted_tools_json=canonical_json([]),
+                permission_ceiling_json=canonical_json({}),
+                context_manifest_id=manifest_id,
+                spec_json=canonical_json(plan_spec),
+                spec_hash=content_hash(plan_spec),
+                created_at=now,
+            )
+        )
+        run.context_manifest_id = manifest_id
+
         session.add(ActivePlanRunMarker(planner_session_id=session_id, run_id=run_id))
         ps.active_run_id = run_id
         outbox_id = new_id("ob")
@@ -4378,14 +4598,34 @@ class ApplicationService:
     ) -> CommandResult:
         """Append a collaboration message. Workers/Planners may post; they cannot spawn."""
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         run_id = payload.get("run_id")
-        if run_id:
+        if auth.actor_type == ActorType.INTERNAL:
+            if not run_id:
+                raise AuthorizationError(
+                    "Internal actors must bind post_task_message to a run_id",
+                    code="authorization_denied",
+                )
             run = session.get(AgentRunRow, run_id)
             if run is None:
                 raise NotFoundError("run not found", code="run_not_found")
-            self._assert_run_write_binding(session, auth, run, payload)
             if run.task_id != task.task_id:
                 raise AuthorizationError("run task mismatch", code="authorization_denied")
+            self._assert_run_write_binding(session, auth, run, payload)
+        elif auth.actor_type == ActorType.HUMAN:
+            if run_id:
+                run = session.get(AgentRunRow, run_id)
+                if run is None:
+                    raise NotFoundError("run not found", code="run_not_found")
+                if run.task_id != task.task_id:
+                    raise AuthorizationError(
+                        "run task mismatch", code="authorization_denied"
+                    )
+        else:
+            raise AuthorizationError(
+                "post_task_message requires Human or Internal actor",
+                code="authorization_denied",
+            )
         next_seq = int(
             session.scalars(
                 select(func.max(TaskMessageRow.sequence_no)).where(
@@ -4447,6 +4687,7 @@ class ApplicationService:
         self, session: Session, auth: AuthContext, payload: dict[str, Any]
     ) -> CommandResult:
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         session_id = task.active_planner_session_id
         if session_id is None:
             raise PreconditionError("no planner session", code="no_planner_session")
@@ -4480,6 +4721,7 @@ class ApplicationService:
     ) -> CommandResult:
         """H-038: after VERIFY FAIL, propose Repair + new Verify as a Plan Revision."""
         task = self._get_task(session, payload["task_id"])
+        self._assert_task_principal(auth, task)
         failed_verify_id = str(payload["failed_verify_work_unit_id"])
         wu = session.get(WorkUnitExecutionRow, failed_verify_id)
         if wu is None or wu.task_id != task.task_id:
@@ -5179,8 +5421,65 @@ class ApplicationService:
                     "fencing_epoch": r.fencing_epoch,
                     "late_arrival": r.late_arrival,
                     "result_json": r.result_json,
+                    "sandbox_exit_unconfirmed": bool(
+                        getattr(r, "sandbox_exit_unconfirmed", False)
+                    ),
                 }
                 for r in rows
+            ]
+
+        return self.executor.run(_read)
+
+    def list_work_units(self, task_id: str) -> list[dict[str, Any]]:
+        def _read(session: Session) -> list[dict[str, Any]]:
+            rows = session.scalars(
+                select(WorkUnitExecutionRow).where(WorkUnitExecutionRow.task_id == task_id)
+            ).all()
+            return [
+                {
+                    "work_unit_id": wu.work_unit_id,
+                    "status": wu.status,
+                    "selected_verdict": wu.selected_verdict,
+                    "verified_artifact_hash": wu.verified_artifact_hash,
+                    "active_run_id": wu.active_run_id,
+                    "blocked_reason": wu.blocked_reason,
+                }
+                for wu in rows
+            ]
+
+        return self.executor.run(_read)
+
+    def list_task_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        def _read(session: Session) -> list[dict[str, Any]]:
+            rows = session.scalars(
+                select(ArtifactRow).where(ArtifactRow.task_id == task_id)
+            ).all()
+            return [
+                {
+                    "artifact_hash": row.artifact_hash,
+                    "artifact_uri": row.artifact_uri,
+                    "run_id": row.run_id,
+                }
+                for row in rows
+            ]
+
+        return self.executor.run(_read)
+
+    def list_task_messages(self, task_id: str) -> list[dict[str, Any]]:
+        def _read(session: Session) -> list[dict[str, Any]]:
+            rows = session.scalars(
+                select(TaskMessageRow)
+                .where(TaskMessageRow.task_id == task_id)
+                .order_by(TaskMessageRow.sequence_no.asc())
+            ).all()
+            return [
+                {
+                    "sequence_no": row.sequence_no,
+                    "kind": row.kind,
+                    "sender_run_id": row.sender_run_id,
+                    "body": json.loads(row.body_json) if row.body_json else {},
+                }
+                for row in rows
             ]
 
         return self.executor.run(_read)

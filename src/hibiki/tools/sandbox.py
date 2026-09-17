@@ -271,8 +271,9 @@ class DockerSandboxAdapter(SandboxAdapter):
             if not cancelled and not timed_out and container_id:
                 # Normal completion: the client exited; confirm the container is gone
                 # (``--rm`` should have removed it). If it is still running, do not
-                # claim a clean exit.
-                exit_confirmed = not self._container_running(container_id)
+                # claim a clean exit. A failed probe also refuses confirmation.
+                running = self._container_running(container_id)
+                exit_confirmed = running is False
         stdout = raw_out.decode("utf-8", errors="replace")
         stderr = raw_err.decode("utf-8", errors="replace")
         exit_code = proc.returncode
@@ -334,7 +335,8 @@ class DockerSandboxAdapter(SandboxAdapter):
             return raw_out or b"", raw_err or b"", None, False
         raw_out, raw_err = self._reap(proc, spec.limits.stop_grace_s)
         still_running = self._container_running(container_id)
-        exit_confirmed = bool(killed) and not still_running
+        # Query failure (None) keeps the writer isolated — never confirm exit.
+        exit_confirmed = bool(killed) and still_running is False
         return raw_out or b"", raw_err or b"", container_id, exit_confirmed
 
     def _require_spec(self) -> SandboxSpec:
@@ -363,8 +365,8 @@ class DockerSandboxAdapter(SandboxAdapter):
             return False
         return completed.returncode == 0
 
-    def _container_running(self, container_id: str | None) -> bool:
-        """True when ``docker inspect`` reports the container is still running."""
+    def _container_running(self, container_id: str | None) -> bool | None:
+        """True/False when inspect answers; ``None`` when the query itself failed."""
         if not container_id:
             return False
         try:
@@ -383,24 +385,38 @@ class DockerSandboxAdapter(SandboxAdapter):
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            # Inspect failed: treat as still possibly running (fail closed).
-            return True
+            return None
         if completed.returncode != 0:
-            # Unknown / removed container: not running.
-            return False
+            err = (completed.stderr or "") + (completed.stdout or "")
+            # Definitive absence vs. daemon/query failure.
+            if "No such object" in err or "No such container" in err:
+                return False
+            return None
         return completed.stdout.strip().lower() in {"true", "1"}
 
     def inspect_container(self, container_id: str | None) -> dict[str, Any]:
         """Public probe used by reconcile/stop confirmation."""
         if not container_id:
-            return {"container_id": None, "running": False, "known": False}
+            return {
+                "container_id": None,
+                "running": False,
+                "known": False,
+                "query_failed": False,
+            }
         running = self._container_running(container_id)
+        if running is None:
+            # Query failed: keep isolation — do not claim the container is gone.
+            return {
+                "container_id": container_id,
+                "running": True,
+                "known": False,
+                "query_failed": True,
+            }
         return {
             "container_id": container_id,
-            "running": running,
-            # When inspect fails closed as running we still report known=True only
-            # if the CLI returned a definitive answer; callers use ``running``.
+            "running": bool(running),
             "known": True,
+            "query_failed": False,
         }
 
     @staticmethod
@@ -438,8 +454,6 @@ class DockerSandboxAdapter(SandboxAdapter):
     @staticmethod
     def _effective_timeout(cmd: _Command, spec: SandboxSpec) -> float:
         wall = float(spec.limits.wall_timeout_s)
-        # Remaining Run wall budget (orchestrator) may further tighten the limit.
-        remaining = None
         # Carried on the validated command via a side channel on the raw dict is
         # handled by callers setting timeout_s; here we only cap by sandbox wall.
         if cmd.timeout_s is None:

@@ -52,7 +52,8 @@ def test_materialize_creates_private_dir_and_is_idempotent(tmp_path):
     path = manager.materialize("ws_1", seed_files={"notes.txt": b"hello"})
 
     assert os.path.isdir(path)
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
+    if os.name != "nt":
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
     assert open(os.path.join(path, "notes.txt"), "rb").read() == b"hello"
 
     # A second call must not delete content a writer produced.

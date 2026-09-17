@@ -107,6 +107,16 @@ def _prepare_topology(
         return f"{prefix}_{raw}"
 
     nodes = [{**n, "work_unit_id": _uid(n["work_unit_id"])} for n in topo["nodes"]]
+    # Per-node assignment: preserve objective / input_refs from the task def when present.
+    for n, raw in zip(nodes, topo["nodes"], strict=False):
+        if raw.get("objective"):
+            n["objective"] = raw["objective"]
+        if raw.get("input_refs") is not None:
+            n["input_refs"] = list(raw["input_refs"])
+        if raw.get("expected_outputs") is not None:
+            n["expected_outputs"] = list(raw["expected_outputs"])
+        if raw.get("acceptance_criteria") is not None:
+            n["acceptance_criteria"] = list(raw["acceptance_criteria"])
     edges = []
     for e in topo["edges"]:
         ne = {
@@ -114,16 +124,13 @@ def _prepare_topology(
             "from_work_unit_id": _uid(e["from_work_unit_id"]),
             "to_work_unit_id": _uid(e["to_work_unit_id"]),
         }
-        # Live models cannot hit a pre-fixed artifact hash; quality gate still runs as
-        # a VERIFY Work Unit, but the edge uses DONE so the DAG can progress.
-        if live and ne.get("artifact_hash") == "PLACEHOLDER_INTEG":
-            ne = {
-                "from_work_unit_id": ne["from_work_unit_id"],
-                "to_work_unit_id": ne["to_work_unit_id"],
-                "predicate": "DONE",
-            }
-        elif ne.get("artifact_hash") == "PLACEHOLDER_INTEG":
-            ne["artifact_hash"] = integ_hash
+        if ne.get("artifact_hash") == "PLACEHOLDER_INTEG":
+            if live:
+                # Live content hashes are not known a priori; keep VERDICT_PASS but
+                # do not pin a Fake placeholder digest.
+                ne.pop("artifact_hash", None)
+            else:
+                ne["artifact_hash"] = integ_hash
         edges.append(ne)
     return nodes, edges, integ_hash, _uid
 
@@ -155,7 +162,7 @@ def _seed_files_for_task(task_def: dict[str, Any]) -> dict[str, str]:
 
 def _materialize_workspaces(svc, nodes: list[dict[str, Any]], seed_files: dict[str, str]) -> list[str]:
     """Create on-disk workspaces so the Broker/sandbox do not see workspace_missing."""
-    from hibiki.interfaces.m1_runner import _chmod_for_sandbox, _seed_workspace
+    from hibiki.interfaces.m1_runner import _seed_workspace
 
     created: list[str] = []
     for node in nodes:
@@ -261,6 +268,79 @@ def _bootstrap_complex_task(
     }
 
 
+def _assess_complex_success(
+    svc,
+    task_id: str,
+    boot: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    require_artifacts: bool,
+) -> dict[str, Any]:
+    """Gate §24.5 success on DAG completion, artifacts, and exit confirmation — not run count."""
+    _ = boot
+    active = [
+        wu
+        for wu in svc.list_work_units(task_id)
+        if wu.get("status") not in {"CANCELLED"}
+    ]
+    done = [
+        wu["work_unit_id"]
+        for wu in active
+        if wu.get("status") == "DONE" and wu.get("selected_verdict") == "PASS"
+    ]
+    missing = [
+        {
+            "work_unit_id": wu.get("work_unit_id"),
+            "status": wu.get("status"),
+            "verdict": wu.get("selected_verdict"),
+        }
+        for wu in active
+        if not (wu.get("status") == "DONE" and wu.get("selected_verdict") == "PASS")
+    ]
+
+    artifacts = list(svc.list_task_artifacts(task_id) or [])
+    artifact_ok = (not require_artifacts) or bool(artifacts)
+
+    runs = svc.list_runs(task_id)
+    unconfirmed = [
+        r
+        for r in runs
+        if r.get("sandbox_exit_unconfirmed")
+        or (
+            r.get("status") in {"RUNNING", "CREATED"}
+            and r.get("assignment_kind") != "PLAN"
+        )
+    ]
+
+    has_verify_pass = any(
+        wu.get("status") == "DONE" and wu.get("selected_verdict") == "PASS"
+        for wu in active
+        if str(wu.get("work_unit_id") or "").endswith("wu_verify")
+        or "verify" in str(wu.get("work_unit_id") or "").lower()
+    )
+    # Fallback: any VERIFY-typed unit from the final plan may use a generated id after repair.
+    if not has_verify_pass:
+        has_verify_pass = any(
+            wu.get("status") == "DONE" and wu.get("selected_verdict") == "PASS"
+            for wu in active
+        ) and len(done) >= 1
+
+    record["ok"] = (
+        len(missing) == 0
+        and artifact_ok
+        and not unconfirmed
+        and bool(done)
+        and has_verify_pass
+    )
+    record["terminal"] = "COMPLETED" if record["ok"] else "INCOMPLETE"
+    record["done_work_units"] = done
+    record["missing_work_units"] = missing
+    record["artifact_count"] = len(artifacts)
+    record["unconfirmed_runs"] = [r.get("run_id") for r in unconfirmed]
+    record["planned_nodes"] = len(active)
+    return record
+
+
 def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[str, Any]:
     from tests.helpers import submit_result_and_exit
 
@@ -277,10 +357,12 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
         "plan_version": boot["plan_version"],
         "runs": [],
         "terminal": None,
+        "ok": False,
     }
 
     safety = 0
     inject = bool(task_def.get("inject_fail_repair"))
+    injected = False
     while safety < 20:
         safety += 1
         r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
@@ -289,18 +371,42 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
             break
         svc.drain_outbox()
         for rid in created:
+            run_row = next(x for x in svc.list_runs(task_id) if x["run_id"] == rid)
+            wu_id = run_row.get("work_unit_id")
+            is_verify = bool(wu_id and str(wu_id).endswith("wu_verify"))
             result = {
                 "outcome": "COMPLETED",
                 "verdict": "PASS",
                 "artifact_refs": [integ_hash],
                 "verified_artifact_refs": [integ_hash],
+                "acceptance_evidence": [
+                    {
+                        "criterion_id": "c1",
+                        "artifact_hash": integ_hash,
+                        "verdict": "PASS",
+                        "check": "fake_harness",
+                    }
+                ],
             }
-            if inject and safety == 3:
-                result = {"outcome": "COMPLETED", "verdict": "FAIL"}
+            if inject and not injected and is_verify:
+                result = {
+                    "outcome": "COMPLETED",
+                    "verdict": "FAIL",
+                    "artifact_refs": [integ_hash],
+                    "acceptance_evidence": [
+                        {
+                            "criterion_id": "c1",
+                            "artifact_hash": integ_hash,
+                            "verdict": "FAIL",
+                            "check": "fake_harness_inject",
+                        }
+                    ],
+                }
+                injected = True
             submit_result_and_exit(svc, auth, rid, result=result)
-            record["runs"].append({"run_id": rid, "result": result})
+            record["runs"].append({"run_id": rid, "result": result, "work_unit_id": wu_id})
 
-        if inject and any(x["result"].get("verdict") == "FAIL" for x in record["runs"]):
+        if injected and inject:
             fail_wu = _uid("wu_verify")
             repair = svc.execute(
                 "request_repair_plan",
@@ -316,10 +422,13 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                 },
             )
             record["repair"] = {"ok": repair.ok, "error": repair.error_code}
-            inject = False
+            if repair.ok:
+                inject = False
+                # Continue loop so the new VERIFY can run after repair.
 
-    record["terminal"] = "COMPLETED" if record["runs"] else "EMPTY"
-    return record
+    return _assess_complex_success(
+        svc, task_id, boot, record, require_artifacts=False
+    )
 
 
 def _wait_runs(svc, task_id: str, run_ids: list[str], *, timeout_s: float = 420.0) -> list[dict]:
@@ -349,7 +458,10 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
     """Same topology as Fake, but EXECUTE Runs are completed by the real ApiAgentAdapter."""
     boot = _bootstrap_complex_task(svc, auth, task_def, live=True)
     task_id = boot["task_id"]
-    n_nodes = len(boot["nodes"])
+    nodes = boot["nodes"]
+    edges = boot["edges"]
+    integ_hash = boot["integ_hash"]
+    _uid = boot["uid"]
     record: dict[str, Any] = {
         "task_def": task_def["task_id"],
         "task_id": task_id,
@@ -361,6 +473,8 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
     }
 
     safety = 0
+    inject = bool(task_def.get("inject_fail_repair"))
+    injected = False
     while safety < 20:
         safety += 1
         r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
@@ -381,31 +495,46 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                     "run_id": row.get("run_id"),
                     "status": row.get("status"),
                     "result": result,
+                    "work_unit_id": row.get("work_unit_id"),
                 }
             )
-            # Stop the wave early if a Run is still RUNNING/TIMEOUT — do not advance DAG
             if row.get("status") in {"TIMEOUT", "CREATED", "RUNNING"}:
                 record["terminal"] = "TIMEOUT"
                 record["ok"] = False
                 return record
+            # Live FAIL→REPAIR only when the model actually returns FAIL.
+            if (
+                inject
+                and not injected
+                and (result or {}).get("outcome") == "COMPLETED"
+                and (result or {}).get("verdict") == "FAIL"
+            ):
+                fail_wu = str(row.get("work_unit_id") or _uid("wu_verify"))
+                refs = (result or {}).get("artifact_refs") or [integ_hash]
+                repair = svc.execute(
+                    "request_repair_plan",
+                    auth,
+                    {
+                        "task_id": task_id,
+                        "failed_verify_work_unit_id": fail_wu,
+                        "artifact_hash": refs[0] if refs else integ_hash,
+                        "keep_nodes": [
+                            n for n in nodes if n["work_unit_id"] != fail_wu
+                        ],
+                        "keep_edges": [
+                            e
+                            for e in edges
+                            if e.get("to_work_unit_id") != fail_wu
+                        ],
+                    },
+                )
+                record["repair"] = {"ok": repair.ok, "error": repair.error_code}
+                injected = True
+                inject = False
 
-    passed = [
-        x
-        for x in record["runs"]
-        if (x.get("result") or {}).get("outcome") == "COMPLETED"
-        and (x.get("result") or {}).get("verdict") == "PASS"
-    ]
-    blocked_or_fail = [
-        x
-        for x in record["runs"]
-        if (x.get("result") or {}).get("verdict") in {"FAIL", "BLOCKED"}
-        or (x.get("result") or {}).get("outcome") == "BLOCKED"
-    ]
-    record["ok"] = len(passed) >= n_nodes and not blocked_or_fail
-    record["terminal"] = "COMPLETED" if record["runs"] else "EMPTY"
-    record["passed_runs"] = len(passed)
-    record["planned_nodes"] = n_nodes
-    return record
+    return _assess_complex_success(
+        svc, task_id, boot, record, require_artifacts=True
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

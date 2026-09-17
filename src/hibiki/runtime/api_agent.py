@@ -109,6 +109,49 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 _BLOCKED_MARKER = "[[HIBIKI:BLOCKED]]"
+_FAIL_MARKER = "[[HIBIKI:FAIL]]"
+_PASS_MARKER = "[[HIBIKI:PASS]]"
+
+
+def _parse_explicit_result(final_content: str | None) -> dict[str, Any]:
+    """Extract structured COMPLETED/FAIL|PASS fields from the model reply if present."""
+    if not final_content:
+        return {}
+    out: dict[str, Any] = {}
+    if _FAIL_MARKER in final_content:
+        out["verdict"] = "FAIL"
+        out.setdefault("outcome", "COMPLETED")
+    elif _PASS_MARKER in final_content:
+        out["verdict"] = "PASS"
+        out.setdefault("outcome", "COMPLETED")
+    # Prefer a trailing JSON object when the model emits one.
+    text = final_content.strip()
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            payload = json.loads(text[start : end + 1])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get("verdict") in {"PASS", "FAIL"}:
+                out["verdict"] = str(payload["verdict"])
+            if payload.get("outcome") in {"COMPLETED", "BLOCKED"}:
+                out["outcome"] = str(payload["outcome"])
+            if isinstance(payload.get("acceptance_evidence"), list):
+                out["acceptance_evidence"] = payload["acceptance_evidence"]
+    # Common free-text patterns when JSON is absent.
+    lowered = text.lower()
+    if "verdict" in out:
+        return out
+    if '"verdict": "fail"' in lowered or '"verdict":"fail"' in lowered:
+        out["verdict"] = "FAIL"
+        out.setdefault("outcome", "COMPLETED")
+    elif '"verdict": "pass"' in lowered or '"verdict":"pass"' in lowered:
+        out["verdict"] = "PASS"
+        out.setdefault("outcome", "COMPLETED")
+    return out
+
 
 #: Bound on how long the worker waits for the Core to promote its Run to RUNNING
 #: before it starts calling tools (the Core acks ``agent.start`` right after the
@@ -241,6 +284,11 @@ class ApiAgentAdapter(AgentAdapter):
             # loop is already finished there is nothing left to wait for, and
             # joining ourselves would raise.
             if thread is threading.current_thread() and record.finished_writes:
+                if record.sandbox_exit_unconfirmed:
+                    record.alive = True
+                    record.writer_alive = True
+                    record.status = "STOP_UNCONFIRMED"
+                    return self._state(record)
                 record.alive = False
                 record.writer_alive = False
                 record.status = "STOPPED"
@@ -256,6 +304,11 @@ class ApiAgentAdapter(AgentAdapter):
             thread.join(timeout=self.stop_wait_s)
         alive = bool(thread is not None and thread.is_alive())
         with self._lock:
+            if record.sandbox_exit_unconfirmed:
+                record.alive = True
+                record.writer_alive = True
+                record.status = "STOP_UNCONFIRMED"
+                return self._state(record)
             record.alive = alive
             record.writer_alive = alive and not record.finished_writes
             if not alive:
@@ -491,8 +544,55 @@ class ApiAgentAdapter(AgentAdapter):
                     missing_outputs.append(item)
 
         evidence: list[dict[str, Any]] = []
-        if published and criteria:
-            # Bind each required criterion to a published, content-backed artifact.
+        work_type = str(spec.get("work_type") or "").upper()
+        explicit = _parse_explicit_result(final_content)
+
+        blocked = bool(error) or final_content is None
+        if final_content and _BLOCKED_MARKER in final_content:
+            blocked = True
+        if missing_outputs:
+            blocked = True
+            error = error or f"missing_expected_artifacts:{','.join(missing_outputs)}"
+        elif expected and not published:
+            blocked = True
+            error = error or "missing_expected_artifacts"
+
+        # Prefer an explicit model verdict over "published ⇒ PASS". VERIFY must
+        # be able to COMPLETE with FAIL without auto-minted PASS evidence.
+        if explicit.get("verdict") in {"PASS", "FAIL"}:
+            verdict = str(explicit["verdict"])
+        else:
+            verdict = "FAIL" if blocked else "PASS"
+
+        if explicit.get("outcome") in {"COMPLETED", "BLOCKED"}:
+            outcome = str(explicit["outcome"])
+        else:
+            outcome = "BLOCKED" if blocked else "COMPLETED"
+
+        if outcome == "COMPLETED" and verdict == "FAIL":
+            blocked = False
+
+        raw_evidence = explicit.get("acceptance_evidence")
+        if isinstance(raw_evidence, list):
+            for item in raw_evidence:
+                if isinstance(item, dict) and item.get("criterion_id"):
+                    evidence.append(
+                        {
+                            "criterion_id": str(item["criterion_id"]),
+                            "artifact_hash": item.get("artifact_hash"),
+                            "verdict": str(item.get("verdict") or verdict),
+                            "check": item.get("check"),
+                        }
+                    )
+        elif (
+            verdict == "PASS"
+            and not blocked
+            and work_type != "VERIFY"
+            and published
+            and criteria
+        ):
+            # Non-VERIFY workers may bind criteria to published artifacts when the
+            # model did not emit structured evidence. VERIFY never auto-PASSes.
             primary = published[0]
             for index, crit in enumerate(criteria):
                 cid = crit.get("criterion_id")
@@ -507,25 +607,24 @@ class ApiAgentAdapter(AgentAdapter):
                     }
                 )
 
-        blocked = bool(error) or final_content is None
-        if final_content and _BLOCKED_MARKER in final_content:
+        if (
+            outcome == "COMPLETED"
+            and verdict == "PASS"
+            and expected
+            and criteria
+            and not evidence
+        ):
             blocked = True
-        if missing_outputs:
-            blocked = True
-            error = error or f"missing_expected_artifacts:{','.join(missing_outputs)}"
-        elif expected and not published:
-            blocked = True
-            error = error or "missing_expected_artifacts"
-        elif expected and criteria and not evidence:
-            blocked = True
+            outcome = "BLOCKED"
+            verdict = "FAIL"
             error = error or "missing_acceptance_evidence"
 
         result: dict[str, Any] = {
-            "outcome": "BLOCKED" if blocked else "COMPLETED",
+            "outcome": outcome if not blocked else "BLOCKED",
             "summary": (final_content if final_content is not None else (error or ""))[:20000],
-            "verdict": "FAIL" if blocked else "PASS",
+            "verdict": "FAIL" if blocked and outcome != "COMPLETED" else verdict,
             "artifact_refs": published,
-            "acceptance_evidence": [] if blocked else evidence,
+            "acceptance_evidence": [] if (blocked and outcome != "COMPLETED") else evidence,
             "published_paths": published_paths,
         }
         if blocked:
@@ -655,7 +754,14 @@ class ApiAgentAdapter(AgentAdapter):
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
         if tool_name == "fs.read" and result.get("status") == "ok":
-            self._register_tool_read(record, auth, spec, parameters, result)
+            registered = self._register_tool_read(record, auth, spec, parameters, result)
+            if not registered:
+                return {
+                    "status": "error",
+                    "error": "context_append_failed",
+                    "tool": tool_name,
+                    "path": parameters.get("path"),
+                }
         return result
 
     def _register_tool_read(
@@ -665,14 +771,19 @@ class ApiAgentAdapter(AgentAdapter):
         spec: dict[str, Any],
         parameters: dict[str, Any],
         result: dict[str, Any],
-    ) -> None:
-        """Record an fs.read that entered the model as an immutable ContextAppend."""
+    ) -> bool:
+        """Record an fs.read that entered the model as an immutable ContextAppend.
+
+        Hashes and byte counts must describe the bytes actually returned to the model
+        (including truncation), not the whole on-disk file. Audit failure refuses the
+        tool result so unread content cannot enter the model without a ContextAppend.
+        """
         path = str(parameters.get("path") or "")
         digest = str(result.get("sha256") or "")
         if not path or not digest:
-            return
+            return False
         try:
-            self._core.execute(
+            append = self._core.execute(
                 "context_append",
                 auth,
                 {
@@ -683,10 +794,14 @@ class ApiAgentAdapter(AgentAdapter):
                     "authorized_ref": path,
                     "content_hash": digest,
                     "materialized_hash": digest,
+                    "max_bytes": result.get("bytes")
+                    or parameters.get("max_bytes"),
+                    "version": result.get("version"),
                 },
             )
-        except Exception:  # noqa: BLE001 — audit best effort; tool result already returned
-            pass
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(getattr(append, "ok", False))
 
     def _sandbox_for(self, spec: dict[str, Any]) -> Any:
         """A sandbox whose workspace mount is *this Run's* workspace (SPEC §11.1).
@@ -744,21 +859,50 @@ class ApiAgentAdapter(AgentAdapter):
                     command["timeout_s"] = capped
                 else:
                     command["timeout_s"] = min(int(existing), capped)
+            # Establish a recoverable identity *before* execute returns so a crash
+            # mid-call still leaves an unconfirmed writer association.
+            pending_id = f"pending:{record.run_id}:{time.time_ns()}"
+            record.sandbox_exit_unconfirmed = True
+            record.last_container_id = pending_id
+            self._register_sandbox_identity(
+                record,
+                auth,
+                spec,
+                container_id=pending_id,
+                exit_confirmed=False,
+            )
             result = dict(sandbox.execute(command) or {})
         except Exception as exc:  # noqa: BLE001
             detail = f"{type(exc).__name__}: {exc}"
             self._finish_invocation(auth, decision, "error", {"error": detail})
             return {"status": "error", "error": detail}
-        container_id = result.get("container_id")
-        exit_confirmed = result.get("exit_confirmed", result.get("status") == "ok")
-        if container_id or exit_confirmed is False:
-            self._register_sandbox_identity(
-                record, auth, spec, container_id=container_id, exit_confirmed=bool(exit_confirmed)
-            )
+        container_id = result.get("container_id") or pending_id
+        if "exit_confirmed" in result:
+            exit_confirmed = bool(result.get("exit_confirmed"))
+        elif result.get("status") == "stop_unconfirmed":
+            exit_confirmed = False
+        elif result.get("status") in {
+            "ok",
+            "cancelled",
+            "error",
+            "timeout",
+            "unavailable",
+            "denied",
+        }:
+            # The sandbox call returned a definitive terminal status without an
+            # unconfirmed writer claim (typical for in-process / Fake sandboxes).
+            exit_confirmed = True
+        else:
+            exit_confirmed = result.get("status") == "ok"
+        self._register_sandbox_identity(
+            record, auth, spec, container_id=container_id, exit_confirmed=bool(exit_confirmed)
+        )
         if not exit_confirmed:
             record.sandbox_exit_unconfirmed = True
             if isinstance(container_id, str) and container_id:
                 record.last_container_id = container_id
+        else:
+            record.sandbox_exit_unconfirmed = False
         outcome = "ok" if result.get("status") == "ok" else str(result.get("status") or "error")
         self._finish_invocation(auth, decision, outcome, result)
         return result
@@ -982,6 +1126,17 @@ class ApiAgentAdapter(AgentAdapter):
 
     def _state(self, record: _RunRecord) -> dict[str, Any]:
         thread_alive = bool(record.thread is not None and record.thread.is_alive())
+        if record.sandbox_exit_unconfirmed or record.status == "STOP_UNCONFIRMED":
+            return {
+                "run_id": record.run_id,
+                "alive": True,
+                "writer_alive": True,
+                "status": "STOP_UNCONFIRMED",
+                "identity": f"local:{record.run_id}",
+                "start_revoked": bool(record.start_revoked),
+                "sandbox_exit_unconfirmed": True,
+                "container_id": record.last_container_id,
+            }
         return {
             "run_id": record.run_id,
             "alive": thread_alive,
@@ -989,6 +1144,7 @@ class ApiAgentAdapter(AgentAdapter):
             "status": record.status,
             "identity": f"local:{record.run_id}",
             "start_revoked": bool(record.start_revoked),
+            "sandbox_exit_unconfirmed": False,
         }
 
     def _revoked_start_result(

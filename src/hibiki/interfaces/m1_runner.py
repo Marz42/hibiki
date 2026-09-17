@@ -163,6 +163,9 @@ def _seed_workspace(svc: ApplicationService, workspace_id: str, files: dict[str,
     root.chmod(0o755)
     with WorkspacePaths(root) as paths:
         for name, content in files.items():
+            parent = str(Path(name).parent).replace("\\", "/")
+            if parent and parent not in {".", ""}:
+                paths.mkdir(parent)
             paths.atomic_write(name, content.encode("utf-8"))
     _chmod_for_sandbox(root)
     return root

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from hibiki.persistence.models import AgentRunRow, WorkUnitExecutionRow
 from hibiki.runtime.api_agent import ApiAgentAdapter
@@ -19,7 +20,6 @@ from hibiki.runtime.artifacts import LocalArtifactStore, artifact_digest
 from hibiki.runtime.openai_client import ModelReply
 from hibiki.tools.broker import ToolBroker
 from hibiki.tools.sandbox import DockerSandboxAdapter, SandboxLimits, SandboxSpec
-from sqlalchemy import select
 from tests.helpers import human_auth, make_core, run_auth
 from tests.runtime.test_api_agent import ScriptedClient, _final, _tool_call
 
@@ -100,7 +100,7 @@ def test_context_append_refuses_foreign_and_traversal_artifact_uris(tmp_path):
     adapter.wait_for_exit(run_a, timeout=5)
 
     # Seed a real artifact on task B.
-    adapter_b = _adapter(
+    _adapter(
         svc,
         ScriptedClient(
             [

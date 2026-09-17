@@ -28,10 +28,8 @@ See `HIBIKI_MVP_SPEC_v0.2.1.md` and `docs/adr/`.
   artifact verified). Evidence under `docs/acceptance/evidence/m1-2026-09-13/`; the executable
   plan is [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
 - **M2 §24.5**: [`docs/acceptance/M2-2026-09-17.md`](docs/acceptance/M2-2026-09-17.md) —
-  **PASS** (G1–G5 Fake; G6 live **3/3** on `deepseek-flash`). Executable plan:
-  [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md). Evidence under
-  `docs/acceptance/evidence/m2-harness-smoke/` and
-  `docs/acceptance/evidence/m2-2026-09-17/live-runs/`.
+  **PENDING** (adversarial review of `1eb2477` found blocking P1s; not frozen for M3).
+  Checklist: [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md).
 
 ### Running the M1 live-model gate
 
