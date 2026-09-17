@@ -14,6 +14,7 @@ scaffolding bypassed the real code path:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from hibiki.domain.enums import ActorType, WorkspaceState
@@ -594,4 +595,54 @@ def test_core_refuses_unpinned_verdict_pass_without_an_opt_out(
     )
     assert not opted_out.ok, "the Core accepted an unpinned VERDICT_PASS plan"
     assert opted_out.error_code == "plan_missing_artifact_hash"
+    ctx["lock"].release()
+
+
+def test_content_changing_repair_reaches_reverification(tmp_path: Path) -> None:
+    """H-038 intent: a Repair that emits *different* bytes must still be re-verified.
+
+    Third review P1. `request_repair_plan` pinned the new VERIFY edge to the pre-repair
+    digest, so a Repair producing new content left the dependency unsatisfied and the
+    re-verify stayed PENDING forever. The Fake harness hid this by re-emitting the pinned
+    bytes, which proves the revision plumbing but not the repair semantics.
+    """
+    from hibiki.application.bootstrap import bootstrap_core
+    from hibiki.interfaces import m2_runner as R
+    from hibiki.runtime.fake_planner import FakePlannerAdapter
+
+    task_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs/m2/tasks/c2-edit-integrate-repair.json"
+    )
+    task = json.loads(task_path.read_text())
+    planner = FakePlannerAdapter()
+    svc, ctx = bootstrap_core(tmp_path, agent=planner, fake_time=False)
+    planner.bind_core(svc)
+    record = R._run_fake_complex(svc, human_auth(), task)
+
+    # The Repair must have published its own artifact, distinct from the failed one.
+    repair_runs = [r for r in record["runs"] if r["work_type"] == "REPAIR"]
+    assert repair_runs, record.get("failures")
+    repair_hash = repair_runs[-1]["artifact_hash"]
+    assert repair_hash and repair_hash != record.get("integrate_artifact_hash"), (
+        "the test is meaningless unless the Repair changed the content"
+    )
+
+    # Re-verification must have run against the repaired artifact and passed.
+    re_verify = [
+        r
+        for r in record["runs"]
+        if r["work_type"] == "VERIFY"
+        and r["work_unit_id"] != record.get("injected_fail_work_unit")
+    ]
+    assert re_verify, "no re-verify Run was dispatched after the Repair"
+    assert re_verify[-1]["result"]["verdict"] == "PASS"
+
+    revision = record.get("verify_revision") or {}
+    assert revision.get("ok") is True, revision
+    assert revision.get("pinned_artifact_hash") == repair_hash, (
+        "the re-verify edge was not pinned to the repaired artifact"
+    )
+    assert record["ok"] is True, record.get("failures")
+    assert record["verify_pass_work_units"], record.get("failures")
     ctx["lock"].release()
