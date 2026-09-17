@@ -7,6 +7,10 @@ kernel is asked to refuse symlink traversal at each step instead of validating a
 string with ``startswith``/``realpath`` heuristics, which race.  Containment is
 structural rather than textual: ``..`` and absolute forms are rejected before the
 walk starts, and no component is ever followed, so the path cannot leave the root.
+
+On Windows, directory FDs and ``dir_fd`` are unavailable (``os.open`` on a directory
+raises ``PermissionError``). A path-based walk with the same validation and symlink
+refusal is used there; TOCTOU hardening remains Unix/dir_fd-only.
 """
 
 from __future__ import annotations
@@ -29,6 +33,10 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
+#: Windows cannot open directories with ``os.open(O_RDONLY)`` and does not support
+#: ``dir_fd`` walks. Path-based containment is used there.
+_PATH_MODE = os.name == "nt"
+
 
 class PathSafetyError(ValueError):
     """A requested relative path violates the workspace containment rules."""
@@ -43,12 +51,19 @@ def _is_symlink(parent_fd: int, name: str) -> bool:
     return stat.S_ISLNK(st.st_mode)
 
 
+def _is_symlink_path(path: str) -> bool:
+    try:
+        return stat.S_ISLNK(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
 class WorkspacePaths:
     """Open and create files strictly inside one workspace root.
 
-    The root is opened once as a directory file descriptor; every later operation
-    walks from that descriptor, so renaming the root out from under the object cannot
-    redirect an operation (the descriptor keeps pointing at the original directory).
+    On Unix the root is opened once as a directory file descriptor; every later
+    operation walks from that descriptor. On Windows a validated path walk is used
+    instead because directory FDs / ``dir_fd`` are unavailable.
     """
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
@@ -62,9 +77,12 @@ class WorkspacePaths:
         if not stat.S_ISDIR(st.st_mode):
             raise NotADirectoryError(errno.ENOTDIR, "workspace root is not a directory", raw)
         self._root = resolved
-        self._root_fd: int | None = os.open(
-            resolved, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC
-        )
+        self._path_mode = _PATH_MODE
+        self._root_fd: int | None
+        if self._path_mode:
+            self._root_fd = None
+        else:
+            self._root_fd = os.open(resolved, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
 
     @property
     def root(self) -> str:
@@ -88,6 +106,14 @@ class WorkspacePaths:
 
     def resolve_for_read(self, relative: str) -> str:
         """Return the absolute real path of a readable regular file inside root."""
+        if self._path_mode:
+            path = self._path_resolve(relative, expect_dir=False)
+            st = os.lstat(path)
+            if stat.S_ISLNK(st.st_mode):
+                raise PathSafetyError(f"{_SYMLINK_REASON} at {relative!r}")
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(errno.EINVAL, "not a regular file", relative)
+            return path
         parts = self._validate(relative)
         parent_fd = self._walk(parts[:-1], create=False)
         try:
@@ -101,6 +127,17 @@ class WorkspacePaths:
         return self._absolute(parts)
 
     def open_for_read(self, relative: str) -> BinaryIO:
+        if self._path_mode:
+            path = self._path_resolve(relative, expect_dir=False)
+            if _is_symlink_path(path):
+                raise PathSafetyError(f"{_SYMLINK_REASON} at {relative!r}")
+            fd = os.open(path, os.O_RDONLY | _O_CLOEXEC)
+            try:
+                self._require_regular(fd, relative)
+                return os.fdopen(fd, "rb")
+            except BaseException:
+                os.close(fd)
+                raise
         parts = self._validate(relative)
         parent_fd = self._walk(parts[:-1], create=False)
         try:
@@ -115,6 +152,12 @@ class WorkspacePaths:
             raise
 
     def open_for_write(self, relative: str, *, mode: int = 0o644) -> BinaryIO:
+        if self._path_mode:
+            path = self._path_resolve(relative, expect_dir=False, create_parents=True)
+            if _is_symlink_path(path):
+                raise PathSafetyError(f"{_SYMLINK_REASON} at {relative!r}")
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_CLOEXEC, mode)
+            return os.fdopen(fd, "wb")
         parts = self._validate(relative)
         parent_fd = self._walk(parts[:-1], create=False)
         try:
@@ -126,6 +169,17 @@ class WorkspacePaths:
         return os.fdopen(fd, "wb")
 
     def list_dir(self, relative: str) -> list[str]:
+        if relative in {".", ""}:
+            if self._path_mode:
+                return sorted(os.listdir(self._root))
+            fd = self._dup_root()
+            try:
+                return sorted(os.listdir(fd))
+            finally:
+                os.close(fd)
+        if self._path_mode:
+            path = self._path_resolve(relative, expect_dir=True)
+            return sorted(os.listdir(path))
         parts = self._validate(relative)
         parent_fd = self._walk(parts[:-1], create=False)
         try:
@@ -139,11 +193,26 @@ class WorkspacePaths:
 
     def mkdir(self, relative: str) -> None:
         """Create ``relative`` as a directory, including missing parents."""
+        if self._path_mode:
+            self._path_resolve(
+                relative, expect_dir=True, create_parents=True, create_leaf_dir=True
+            )
+            return
         parts = self._validate(relative)
         fd = self._walk(parts, create=True)
         os.close(fd)
 
     def exists(self, relative: str) -> bool:
+        if self._path_mode:
+            try:
+                path = self._path_resolve(relative, expect_dir=False)
+            except (FileNotFoundError, NotADirectoryError, PathSafetyError):
+                return False
+            if _is_symlink_path(path):
+                raise PathSafetyError(
+                    f"{_SYMLINK_REASON} at {relative!r}; a symlink is never a valid target"
+                )
+            return os.path.lexists(path)
         parts = self._validate(relative)
         try:
             parent_fd = self._walk(parts[:-1], create=False)
@@ -185,6 +254,34 @@ class WorkspacePaths:
         if not isinstance(content, (bytes, bytearray, memoryview)):
             raise TypeError("content must be bytes-like")
         data = bytes(content)
+        if self._path_mode:
+            parts = self._validate(relative)
+            parent = self._path_resolve(
+                "/".join(parts[:-1]) if len(parts) > 1 else ".",
+                expect_dir=True,
+                create_parents=True,
+                allow_dot=True,
+            )
+            final = os.path.join(parent, parts[-1])
+            if _is_symlink_path(final):
+                raise PathSafetyError(
+                    f"{_SYMLINK_REASON} at {parts[-1]!r}; refusing to replace a symlink"
+                )
+            tmp_name = f".hibiki-tmp-{os.getpid()}-{secrets.token_hex(8)}"
+            tmp_path = os.path.join(parent, tmp_name)
+            try:
+                with open(tmp_path, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, final)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            return hashlib.sha256(data).hexdigest()
         parts = self._validate(relative)
         name = parts[-1]
         parent_fd = self._walk(parts[:-1], create=False)
@@ -220,7 +317,7 @@ class WorkspacePaths:
         return hashlib.sha256(data).hexdigest()
 
     # ------------------------------------------------------------------
-    # Validation and the dir_fd walk
+    # Validation and the dir_fd / path walk
     # ------------------------------------------------------------------
 
     def _validate(self, relative: str) -> list[str]:
@@ -243,11 +340,48 @@ class WorkspacePaths:
 
     def _absolute(self, parts: list[str]) -> str:
         candidate = os.path.join(self._root, *parts)
-        # Not a string-prefix test: proving containment by construction, then
-        # double-checking with commonpath keeps the invariant explicit.
         if os.path.commonpath([self._root, candidate]) != self._root:
             raise PathSafetyError(f"path leaves the workspace root: {'/'.join(parts)!r}")
         return candidate
+
+    def _path_resolve(
+        self,
+        relative: str,
+        *,
+        expect_dir: bool,
+        create_parents: bool = False,
+        create_leaf_dir: bool = False,
+        allow_dot: bool = False,
+    ) -> str:
+        """Windows path-mode walk: refuse ``..`` / abs / symlink components."""
+        if allow_dot and relative in {".", ""}:
+            return self._root
+        parts = self._validate(relative)
+        cur = self._root
+        for i, name in enumerate(parts):
+            nxt = os.path.join(cur, name)
+            if os.path.commonpath([self._root, os.path.abspath(nxt)]) != self._root:
+                raise PathSafetyError(f"path leaves the workspace root: {relative!r}")
+            is_last = i == len(parts) - 1
+            if _is_symlink_path(nxt):
+                raise PathSafetyError(f"{_SYMLINK_REASON} in path component {name!r}")
+            if not os.path.lexists(nxt):
+                if is_last and (create_leaf_dir or (create_parents and expect_dir)):
+                    os.makedirs(nxt, exist_ok=True)
+                elif not is_last and create_parents:
+                    os.makedirs(nxt, exist_ok=True)
+                elif is_last and create_parents and not expect_dir:
+                    os.makedirs(cur, exist_ok=True)
+                    return nxt
+                else:
+                    raise FileNotFoundError(errno.ENOENT, "No such file or directory", nxt)
+            if not is_last or expect_dir:
+                if os.path.lexists(nxt):
+                    st = os.lstat(nxt)
+                    if not stat.S_ISDIR(st.st_mode):
+                        raise NotADirectoryError(errno.ENOTDIR, "not a directory", nxt)
+            cur = nxt
+        return cur
 
     def _dup_root(self) -> int:
         if self._root_fd is None:
@@ -304,8 +438,6 @@ class WorkspacePaths:
                 name, flags | _O_NOFOLLOW | _O_CLOEXEC, mode, dir_fd=parent_fd
             )
         except OSError as exc:
-            # O_NOFOLLOW on a symlink is ELOOP for a file target and ENOTDIR when
-            # O_DIRECTORY is also set; both mean "a symlink was not followed".
             if exc.errno == errno.ELOOP or (
                 exc.errno == errno.ENOTDIR and _is_symlink(parent_fd, name)
             ):

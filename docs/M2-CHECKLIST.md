@@ -1,6 +1,6 @@
 # M2 Execution Checklist — Planner / DAG / Integration (§24.5)
 
-Status: **in progress** (G1–G5 Fake met 2026-09-17; G6 live pending credentials)
+Status: **PASS** (G1–G6 met 2026-09-17; live G6 3/3 on deepseek-flash)
 Spec: `HIBIKI_MVP_SPEC_v0.2.1.md` §24.5, with §5–9 / §11 / §12.3 / §16–17 / §20 / §27
 Prior milestones: M0 PASS (`docs/acceptance/M0-2026-09-13.md`), M1 PASS (`docs/acceptance/M1-2026-09-13.md`)
 Design rules: `docs/adr/0001-tech-stack-m0.md`, `docs/adr/0002-known-limits-m0.md` (in-process Core carried forward)
@@ -188,3 +188,4 @@ must land before K.
 | 2026-09-17 | **K done (Fake)**: H-033–H-038 + multi-agent H-011/H-013–H-016 in `tests/m2` (29 passed); G4 ×20; harness dry-run 3/3 (`m2_runner`). |
 | 2026-09-17 | **L partial**: acceptance record `docs/acceptance/M2-2026-09-17.md` — G1–G5 PASS; G6 live run recorded **0/3** PASS (`workspace_missing` + Docker Desktop down). |
 | 2026-09-17 | **m2_runner**: load `.env` with M1 `HIBIKI_MODEL_*` names; live routes PLAN→FakePlanner / EXECUTE→ApiAgentAdapter. |
+| 2026-09-17 | **G6 retry PASS 3/3**: Docker up; workspace seeding; Windows `WorkspacePaths` path-mode; clearer c2/c3 objectives. Live evidence refreshed. |

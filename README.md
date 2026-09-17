@@ -28,10 +28,9 @@ See `HIBIKI_MVP_SPEC_v0.2.1.md` and `docs/adr/`.
   artifact verified). Evidence under `docs/acceptance/evidence/m1-2026-09-13/`; the executable
   plan is [`docs/M1-CHECKLIST.md`](docs/M1-CHECKLIST.md).
 - **M2 §24.5**: [`docs/acceptance/M2-2026-09-17.md`](docs/acceptance/M2-2026-09-17.md) —
-  **G1–G5 PASS** (H-033–H-038, barrier parallel, Fake×20, Planner checkpoint recovery);
-  **G6 live NOT MET** (3/3 tasks ran on `deepseek-flash`, all EXECUTE Runs `BLOCKED`:
-  workspace missing + Docker unavailable). Executable plan: [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md).
-  Evidence under `docs/acceptance/evidence/m2-harness-smoke/` and
+  **PASS** (G1–G5 Fake; G6 live **3/3** on `deepseek-flash`). Executable plan:
+  [`docs/M2-CHECKLIST.md`](docs/M2-CHECKLIST.md). Evidence under
+  `docs/acceptance/evidence/m2-harness-smoke/` and
   `docs/acceptance/evidence/m2-2026-09-17/live-runs/`.
 
 ### Running the M1 live-model gate

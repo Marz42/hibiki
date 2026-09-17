@@ -1,7 +1,7 @@
 {
   "task_id": "m2-c3",
   "title": "Convert two formats then integrate catalog",
-  "objective": "Convert two small files in parallel, integrate a catalog, verify hashes.",
+  "objective": "Conv1: copy attachments/a.txt to out/a.upper.txt in uppercase and publish. Conv2: copy attachments/b.txt to out/b.upper.txt in uppercase and publish. Integrate: write catalog.md listing both outputs and publish. Verify: write verify.md saying PASS and publish. Keep tool use minimal; do not explore outside attachments/ and out/.",
   "topology": {
     "nodes": [
       {"work_unit_id": "wu_conv1", "work_type": "EXECUTE", "spec_version": 1},

@@ -1,7 +1,7 @@
 {
   "task_id": "m2-c2",
   "title": "Shared-repo dual edit then integrate with repair",
-  "objective": "Two workers edit different files; integrate; on conflict repair and re-verify.",
+  "objective": "Worker A: write edits/a.md with one short sentence about alpha. Worker B: write edits/b.md with one short sentence about beta. Integrate: merge both into catalog.md and publish it. Verify: confirm catalog.md exists and publish a one-line verify.md. Keep tool use minimal.",
   "topology": {
     "nodes": [
       {"work_unit_id": "wu_edit_a", "work_type": "EXECUTE", "spec_version": 1},

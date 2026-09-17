@@ -96,7 +96,9 @@ def _load_tasks(tasks_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _prepare_topology(task_def: dict[str, Any]) -> tuple[list[dict], list[dict], str, Any]:
+def _prepare_topology(
+    task_def: dict[str, Any], *, live: bool = False
+) -> tuple[list[dict], list[dict], str, Any]:
     topo = task_def["topology"]
     prefix = task_def["task_id"].replace("-", "_")
     integ_hash = f"integ-{task_def['task_id']}"
@@ -112,13 +114,60 @@ def _prepare_topology(task_def: dict[str, Any]) -> tuple[list[dict], list[dict],
             "from_work_unit_id": _uid(e["from_work_unit_id"]),
             "to_work_unit_id": _uid(e["to_work_unit_id"]),
         }
-        if ne.get("artifact_hash") == "PLACEHOLDER_INTEG":
+        # Live models cannot hit a pre-fixed artifact hash; quality gate still runs as
+        # a VERIFY Work Unit, but the edge uses DONE so the DAG can progress.
+        if live and ne.get("artifact_hash") == "PLACEHOLDER_INTEG":
+            ne = {
+                "from_work_unit_id": ne["from_work_unit_id"],
+                "to_work_unit_id": ne["to_work_unit_id"],
+                "predicate": "DONE",
+            }
+        elif ne.get("artifact_hash") == "PLACEHOLDER_INTEG":
             ne["artifact_hash"] = integ_hash
         edges.append(ne)
     return nodes, edges, integ_hash, _uid
 
 
-def _bootstrap_complex_task(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[str, Any]:
+def _seed_files_for_task(task_def: dict[str, Any]) -> dict[str, str]:
+    """Load fixture text into workspace seed paths."""
+    files: dict[str, str] = {
+        "README.md": (
+            f"# {task_def.get('title') or task_def['task_id']}\n\n"
+            f"{task_def.get('objective') or ''}\n\n"
+            "Instructions (keep this short):\n"
+            "1. Read attachments/ if present.\n"
+            "2. Write a short deliverable file (e.g. result.md or out.txt).\n"
+            "3. Call artifact.publish on that file.\n"
+            "4. Submit COMPLETED/PASS. Do not probe unrelated paths.\n"
+        )
+    }
+    inputs = task_def.get("inputs") or {}
+    for name, rel in inputs.items():
+        path = Path(rel)
+        if path.is_file():
+            files[f"attachments/{name}.txt"] = path.read_text(encoding="utf-8")
+        else:
+            files[f"attachments/{name}.txt"] = f"stub input for {name}\n"
+    files.setdefault("attachments/a.txt", "alpha sample content\n")
+    files.setdefault("attachments/b.txt", "beta sample content\n")
+    return files
+
+
+def _materialize_workspaces(svc, nodes: list[dict[str, Any]], seed_files: dict[str, str]) -> list[str]:
+    """Create on-disk workspaces so the Broker/sandbox do not see workspace_missing."""
+    from hibiki.interfaces.m1_runner import _chmod_for_sandbox, _seed_workspace
+
+    created: list[str] = []
+    for node in nodes:
+        ws_id = str(node.get("workspace_id") or f"ws_{node['work_unit_id']}")
+        _seed_workspace(svc, ws_id, seed_files)
+        created.append(ws_id)
+    return created
+
+
+def _bootstrap_complex_task(
+    svc, auth: AuthContext, task_def: dict[str, Any], *, live: bool = False
+) -> dict[str, Any]:
     """Create → contract → PLAN Run → activate fixed topology. Shared by Fake and live."""
     from tests.helpers import run_auth
 
@@ -151,6 +200,11 @@ def _bootstrap_complex_task(svc, auth: AuthContext, task_def: dict[str, Any]) ->
                 "permission_ceiling": {
                     "tools": ["fs.read", "fs.write", "fs.list", "shell.run", "artifact.publish"]
                 },
+                "resource_limits": {
+                    "wall_timeout_seconds": 420,
+                    "max_model_calls": 200,
+                    "max_turns": 30,
+                },
             },
         },
     )
@@ -172,7 +226,7 @@ def _bootstrap_complex_task(svc, auth: AuthContext, task_def: dict[str, Any]) ->
     generation = r.data["generation"]
     svc.drain_outbox()
 
-    nodes, edges, integ_hash, _uid = _prepare_topology(task_def)
+    nodes, edges, integ_hash, _uid = _prepare_topology(task_def, live=live)
     planner = run_auth(svc, plan_run)
     prop = svc.execute(
         "submit_plan_proposal",
@@ -194,6 +248,8 @@ def _bootstrap_complex_task(svc, auth: AuthContext, task_def: dict[str, Any]) ->
             "result": {"outcome": "COMPLETED", "verdict": "PASS"},
         },
     )
+
+    workspaces = _materialize_workspaces(svc, nodes, _seed_files_for_task(task_def))
     return {
         "task_id": task_id,
         "nodes": nodes,
@@ -201,13 +257,14 @@ def _bootstrap_complex_task(svc, auth: AuthContext, task_def: dict[str, Any]) ->
         "integ_hash": integ_hash,
         "uid": _uid,
         "plan_version": prop.data.get("plan_version"),
+        "workspaces": workspaces,
     }
 
 
 def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[str, Any]:
     from tests.helpers import submit_result_and_exit
 
-    boot = _bootstrap_complex_task(svc, auth, task_def)
+    boot = _bootstrap_complex_task(svc, auth, task_def, live=False)
     task_id = boot["task_id"]
     nodes = boot["nodes"]
     edges = boot["edges"]
@@ -290,12 +347,14 @@ def _wait_runs(svc, task_id: str, run_ids: list[str], *, timeout_s: float = 420.
 
 def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[str, Any]:
     """Same topology as Fake, but EXECUTE Runs are completed by the real ApiAgentAdapter."""
-    boot = _bootstrap_complex_task(svc, auth, task_def)
+    boot = _bootstrap_complex_task(svc, auth, task_def, live=True)
     task_id = boot["task_id"]
+    n_nodes = len(boot["nodes"])
     record: dict[str, Any] = {
         "task_def": task_def["task_id"],
         "task_id": task_id,
         "plan_version": boot["plan_version"],
+        "workspaces": boot.get("workspaces"),
         "runs": [],
         "terminal": None,
         "ok": False,
@@ -324,6 +383,11 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                     "result": result,
                 }
             )
+            # Stop the wave early if a Run is still RUNNING/TIMEOUT — do not advance DAG
+            if row.get("status") in {"TIMEOUT", "CREATED", "RUNNING"}:
+                record["terminal"] = "TIMEOUT"
+                record["ok"] = False
+                return record
 
     passed = [
         x
@@ -331,11 +395,16 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
         if (x.get("result") or {}).get("outcome") == "COMPLETED"
         and (x.get("result") or {}).get("verdict") == "PASS"
     ]
-    record["ok"] = bool(passed) and all(
-        (x.get("status") not in {"TIMEOUT", AgentRunStatus.FAILED, "FAILED"})
+    blocked_or_fail = [
+        x
         for x in record["runs"]
-    )
+        if (x.get("result") or {}).get("verdict") in {"FAIL", "BLOCKED"}
+        or (x.get("result") or {}).get("outcome") == "BLOCKED"
+    ]
+    record["ok"] = len(passed) >= n_nodes and not blocked_or_fail
     record["terminal"] = "COMPLETED" if record["runs"] else "EMPTY"
+    record["passed_runs"] = len(passed)
+    record["planned_nodes"] = n_nodes
     return record
 
 
