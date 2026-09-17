@@ -386,8 +386,6 @@ def _propose_verification_revision(
     auth: AuthContext,
     task_id: str,
     *,
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
     held_nodes: list[dict[str, Any]],
     held_edges: list[dict[str, Any]],
     artifact_hash: str,
@@ -408,6 +406,21 @@ def _propose_verification_revision(
     from hibiki.runtime.clock import new_id
     from tests.helpers import run_auth
 
+    # Base the revision on what the Plan says *now*, not on the boot topology: an earlier
+    # Repair revision may already have dropped or re-pointed edges, and re-supplying the
+    # boot copy resurrects an edge to a superseded Work Unit (observed as
+    # `plan_dangling_edge`).
+    current = svc.get_active_plan(task_id) or {}
+    held_ids = {str(h["work_unit_id"]) for h in held_nodes}
+    nodes = [dict(n) for n in (current.get("nodes") or [])]
+    edges = [
+        dict(e)
+        for e in (current.get("edges") or [])
+        # The held stage's own edges are re-created below against fresh unit ids.
+        if str(e.get("to_work_unit_id") or "") not in held_ids
+        and str(e.get("from_work_unit_id") or "") not in held_ids
+    ]
+
     dispatched = svc.execute("dispatch_planner_run", auth, {"task_id": task_id})
     if not dispatched.ok:
         return {"ok": False, "error": dispatched.error_code, "stage": "dispatch"}
@@ -421,6 +434,29 @@ def _propose_verification_revision(
         from an earlier plan version, and reusing it would put a node in the new plan that
         can never reach DONE/PASS (SPEC §6.4).
         """
+        base_ids = {str(n.get("work_unit_id") or "") for n in nodes}
+
+        def _producer() -> str:
+            """The node whose deliverable the re-verify edge must hang off.
+
+            A held edge may name a producer a Repair revision superseded (the original
+            INTEGRATE unit). Keeping it would be a dangling edge, so the edge moves to the
+            REPAIR unit, which is what now produces the artifact.
+            """
+            for wanted in ("REPAIR", "INTEGRATE"):
+                match = next(
+                    (
+                        str(n.get("work_unit_id"))
+                        for n in nodes
+                        if str(n.get("work_type") or "").upper() == wanted
+                        and str(n.get("work_unit_id")) in base_ids
+                    ),
+                    None,
+                )
+                if match:
+                    return match
+            return next(iter(base_ids), "")
+
         minted: dict[str, str] = {}
         added_nodes: list[dict[str, Any]] = []
         for held in held_nodes:
@@ -443,7 +479,16 @@ def _propose_verification_revision(
             if source in minted:
                 moved["from_work_unit_id"] = minted[source]
             if str(moved.get("predicate") or "").upper() == "VERDICT_PASS":
+                # The edge must hang off the unit that actually produces the artefact the
+                # pin names. After a Repair the original producer's digest is superseded,
+                # so the edge moves to the Repair unit — otherwise the dependency compares
+                # the pin against the *old* delivery and can never be satisfied.
+                producer = _producer()
+                if producer:
+                    moved["from_work_unit_id"] = producer
                 moved["artifact_hash"] = artifact_hash
+            elif source not in base_ids:
+                moved["from_work_unit_id"] = _producer()
             out.append(moved)
         return added_nodes, out
 
@@ -941,6 +986,13 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
     inject = bool(task_def.get("inject_fail_repair"))
     injected = False
     repair_requested = False
+    verify_stage_done = False
+    held_verify_nodes = [
+        n for n in nodes if str(n.get("work_type") or "").upper() == "VERIFY"
+    ]
+    held_verify_edges = [
+        e for e in edges if str(e.get("predicate") or "").upper() == "VERDICT_PASS"
+    ]
     while safety < 30:
         safety += 1
         r = svc.execute("dispatch_ready_runs", auth, {"task_id": task_id})
@@ -1028,6 +1080,9 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                     # The Repair unit gets the failing evidence as its objective.
                     "failed_evidence": record.get("injected_fail_evidence")
                     or "the integrated deliverable failed verification",
+                    # The re-verify digest cannot exist until REPAIR publishes, so the
+                    # Core must not create a VERDICT_PASS edge here (SPEC §6.1).
+                    "include_verify": False,
                     "artifact_hash": record.get("injected_fail_artifact") or "",
                     "keep_nodes": [n for n in nodes if n["work_unit_id"] != failed_wu],
                     "keep_edges": [e for e in edges if e.get("to_work_unit_id") != failed_wu],
@@ -1053,9 +1108,9 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                     workspace_by_node.setdefault(
                         wid, str(node.get("workspace_id") or f"ws_{wid}")
                     )
-                # The REPAIR unit supersedes the INTEGRATE deliverable and must emit its
-                # own (different) bytes; the re-verify edge is pinned to those bytes once
-                # they exist, so a content-changing Repair reaches re-verification.
+                # The REPAIR unit supersedes the INTEGRATE deliverable and emits its own,
+                # different bytes; the re-verify edge is pinned to those bytes once they
+                # exist, so a content-changing Repair reaches re-verification.
                 integrate_node = next(
                     (
                         n
@@ -1073,19 +1128,44 @@ def _run_fake_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                     None,
                 )
                 if repair_node is not None and integrate_node is not None:
-                    # The re-verify edge is pinned to the INTEGRATE digest, so the FAKE
-                    # repair reproduces those bytes. This is a harness stand-in, NOT the
-                    # intended semantics: a real Repair changes content and the re-verify
-                    # must bind the repaired artifact. See docs/M2-KNOWN-GAPS.md §3.
                     repair_node["expected_outputs"] = list(
                         integrate_node.get("expected_outputs") or []
                     )
-                    repair_node["_upstream_paths"] = list(
-                        integrate_node.get("_upstream_paths") or []
-                    )
-                    repair_node["objective"] = integrate_node.get("objective")
-                    repair_node["_content_node_id"] = integrate_node.get("work_unit_id")
-                    repair_node["_content_work_type"] = integrate_node.get("work_type")
+                    # Keep its own identity: the REPAIR artifact must differ from the
+                    # failed one, otherwise the test proves nothing about H-038.
+                    repair_node["_content_node_id"] = repair_node["work_unit_id"]
+                    repair_node["_content_work_type"] = "REPAIR"
+
+        # The REPAIR unit has published, so its digest exists: add the re-verify stage as a
+        # revision pinned to the repaired artifact rather than the pre-repair hash.
+        if not verify_stage_done and record.get("repair", {}).get("repair_artifact_hash"):
+            verify_stage_done = True
+            revision = _propose_verification_revision(
+                svc,
+                auth,
+                task_id,
+                held_nodes=held_verify_nodes,
+                held_edges=held_verify_edges,
+                artifact_hash=str(record["repair"]["repair_artifact_hash"]),
+            )
+            record["verify_revision"] = revision
+            if revision.get("ok"):
+                edges = [
+                    *edges,
+                    *[
+                        {
+                            **e,
+                            "from_work_unit_id": str(
+                                record["repair"].get("repair_work_unit_id")
+                                or e.get("from_work_unit_id")
+                            ),
+                            "artifact_hash": str(
+                                record["repair"]["repair_artifact_hash"]
+                            ),
+                        }
+                        for e in held_verify_edges
+                    ],
+                ]
 
     return _assess_complex_success(svc, task_id, boot, record, require_artifacts=False)
 
@@ -1217,6 +1297,7 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
     held_verify_nodes = list(boot.get("held_verify_nodes") or [])
     held_verify_edges = list(boot.get("held_verify_edges") or [])
     verify_revision_done = not held_verify_nodes
+    repair_verify_done = False
 
     def _delivered_hash(result: dict[str, Any] | None, work_unit_id: Any) -> str | None:
         """The digest this Run actually delivered, preferring Core-confirmed evidence."""
@@ -1243,13 +1324,19 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
 
     def _work_type_of(work_unit_id: str) -> str:
         node = next((n for n in nodes if n["work_unit_id"] == work_unit_id), None)
-        if node is not None:
-            return str(node.get("work_type") or "EXECUTE").upper()
+        if node is not None and node.get("work_type"):
+            return str(node["work_type"]).upper()
         unit = next(
             (wu for wu in svc.list_work_units(task_id) if wu["work_unit_id"] == work_unit_id),
             None,
         )
-        return str((unit or {}).get("work_type") or "EXECUTE").upper()
+        if unit and unit.get("work_type"):
+            return str(unit["work_type"]).upper()
+        # A Repair revision introduces units the boot topology never knew.
+        for plan_node in (svc.get_active_plan(task_id) or {}).get("nodes") or []:
+            if str(plan_node.get("work_unit_id")) == work_unit_id:
+                return str(plan_node.get("work_type") or "EXECUTE").upper()
+        return "EXECUTE"
 
     def _note_inject(triggered: bool, detail: str = "") -> None:
         """Record honestly whether the injected FAIL prerequisite actually occurred."""
@@ -1331,11 +1418,18 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
             ):
                 _note_inject(True)
                 fail_wu = str(wu_id or _uid("wu_verify"))
-                # Pin the revision to the real digest under verification.
+                # The re-verify digest does not exist until REPAIR publishes, so the Core
+                # must not create a VERDICT_PASS edge here (SPEC §6.1); the harness adds
+                # the re-verify stage afterwards, pinned to the repaired artifact.
                 upstream = delivered or record.get("integrate_artifact_hash")
                 payload: dict[str, Any] = {
                     "task_id": task_id,
                     "failed_verify_work_unit_id": fail_wu,
+                    "failed_evidence": (
+                        (result or {}).get("summary")
+                        or "the integrated deliverable failed verification"
+                    )[:500],
+                    "include_verify": False,
                     "keep_nodes": [n for n in nodes if n["work_unit_id"] != fail_wu],
                     "keep_edges": [
                         e for e in edges if e.get("to_work_unit_id") != fail_wu
@@ -1356,6 +1450,33 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                     plan = svc.get_active_plan(task_id) or {}
                     record["repair"]["plan_version"] = plan.get("plan_version")
 
+        # The REPAIR unit has published, so its digest exists: add the re-verify stage as a
+        # revision pinned to the repaired artifact (never the pre-repair hash).
+        repair_hash = (record.get("repair") or {}).get("repair_artifact_hash")
+        if not repair_verify_done and repair_hash:
+            repair_verify_done = True
+            for held in held_verify_nodes:
+                _materialize_workspaces(
+                    svc, [dict(held)], seed_files, seeded=seeded
+                )
+            revision = _propose_verification_revision(
+                svc,
+                auth,
+                task_id,
+                held_nodes=held_verify_nodes,
+                held_edges=held_verify_edges,
+                artifact_hash=str(repair_hash),
+            )
+            record["verify_revision"] = revision
+            if revision.get("ok"):
+                edges = [
+                    *edges,
+                    *[
+                        {**e, "artifact_hash": str(repair_hash)}
+                        for e in held_verify_edges
+                    ],
+                ]
+
         # The producing Work Units have finished, so the INTEGRATE digest now exists.
         # Add the VERIFY stage as a Plan Revision pinned to that real digest instead of
         # asking the Core to accept an unpinned VERDICT_PASS edge.
@@ -1371,13 +1492,6 @@ def _run_live_complex(svc, auth: AuthContext, task_def: dict[str, Any]) -> dict[
                 svc,
                 auth,
                 task_id,
-                nodes=[
-                    n for n in node_by_id.values()
-                    if str(n["work_unit_id"]) not in {
-                        str(h["work_unit_id"]) for h in held_verify_nodes
-                    }
-                ],
-                edges=edges,
                 held_nodes=held_verify_nodes,
                 held_edges=held_verify_edges,
                 artifact_hash=str(record["integrate_artifact_hash"]),
