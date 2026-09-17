@@ -1,6 +1,6 @@
 {
   "task_def": "m2-c1",
-  "task_id": "task_38e321436b754a8d",
+  "task_id": "task_283cc52c5b144f93",
   "plan_version": 2,
   "workspaces": [
     "ws_m2_c1_wu_left",
@@ -10,19 +10,19 @@
   ],
   "runs": [
     {
-      "run_id": "run_196250566ecd4acf",
+      "run_id": "run_8897d020d75a4bab",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5",
+            "artifact_hash": "9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5"
+          "9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -30,27 +30,27 @@
         "published_paths": [
           "left_summary.md"
         ],
-        "summary": "Deliverable created, verified, and published.\n\n**What was done**\n- Read `attachments/left.txt` (45 bytes, sha256 `961d89\u20267213`) \u2014 the only input consumed.\n- Wrote `left_summary.md` summarizing solely that attachment.\n\n**Scope compliance**\n- `attachments/right.txt` was never read, written, or otherwise modified.\n- No `right_summary.md` was produced (that belongs to the sibling work unit).\n\n**Verification**\n- `left_summary.md` re-read confirms content matches intent; sha256 recomputed identically as `cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5`, byte length 571 (non-empty, contains source citation, content excerpt, summary, and scope note).\n- Artifact published with matching hash: `artifact://cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5`.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5\",\"verdict\":\"PASS\"}]}",
+        "summary": "Summarized only `attachments/left.txt` into `left_summary.md`; `right` was not touched.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c1_wu_left",
       "work_type": "EXECUTE",
-      "artifact_hash": "cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5"
+      "artifact_hash": "9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb"
     },
     {
-      "run_id": "run_311ce3130eed461f",
+      "run_id": "run_03826eeb34f14c7b",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590",
+            "artifact_hash": "3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590"
+          "3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -58,27 +58,27 @@
         "published_paths": [
           "right_summary.md"
         ],
-        "summary": "Objective complete.\n\n**Actions taken:**\n1. Read `attachments/right.txt` (sha256 `6f22fbe1\u2026`) \u2014 the only input touched.\n2. Wrote `right_summary.md` summarizing only that file.\n3. Verified the artifact hash and confirmed `attachments/left.txt` (sha256 `961d8902\u2026`) and `right.txt` were **not modified** \u2014 no writes to any left-related path.\n4. Published the deliverable.\n\n**Deliverable:** `right_summary.md` (616 bytes), sha256 `914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590`.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590\",\"verdict\":\"PASS\"}]}\n```",
+        "summary": "Objective met: read only `attachments/right.txt`, wrote and published `right_summary.md`. The left input was never read, written, or modified.\n\nDeliverable content:\n```markdown\n# Right Attachment Summary\n\nSource: `attachments/right.txt` (sha256 `6f22fbe188e920f0d2dd707d8a4e2f063c3bb6327c7a33b6318113a74a7ebc27`, 46 bytes)\n\n## Summary\n- The file identifies itself as the \"right\" attachment for the M2 c1 parallel-summarize task.\n- Its content is a single short line: \"right attachment for M2 c1 parallel summarize\".\n- It carries no additional data, tables, or sections beyond that identifying statement.\n\n## Key point\nThis attachment is the right-hand input in the parallel summarization pair, to be merged with the left-hand summary during integration.\n```\n\nEvidence: `right_summary.md` \u2014 577 bytes, sha256 `3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d`; published as `artifact://3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d` (no hash mismatch); re-read confirms content stability.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c1_wu_right",
       "work_type": "EXECUTE",
-      "artifact_hash": "914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590"
+      "artifact_hash": "3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d"
     },
     {
-      "run_id": "run_a3ec5739d04c4f65",
+      "run_id": "run_8e5fda5c044f4a5e",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde",
+            "artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+          "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -86,47 +86,47 @@
         "published_paths": [
           "report.md"
         ],
-        "summary": "Merge complete and published.\n\n**Summary of work:**\n- Read the two upstream parallel summaries (`m2_c1_wu_left.md` \u2192 left_summary.md content, `m2_c1_wu_right.md` \u2192 right_summary.md content).\n- Integrated both into `report.md` with a clear provenance table, preserved Part 1 (Left) and Part 2 (Right) sections verbatim, and added a Combined Findings section.\n- Verified structure: file exists (2159 bytes), contains 2 part sections plus Left/Right/Combined headings, hash matches.\n- Published the artifact successfully (`artifact://b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde`).\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde\",\"verdict\":\"PASS\"}]}\n```",
+        "summary": "The merge is complete and verified. The report structure contains the expected headings and both source hashes, and the artifact published successfully.\n\nSummary of work:\n- Read both upstream worker summaries (`m2_c1_wu_left.md`, `m2_c1_wu_right.md`) delivered at the workspace top level, plus the source attachments and README.\n- Merged them into `report.md` with an integrated structure: H1 title, a section per attachment, a combined overview, and a sources table.\n- Verified structure via `shell_run` (headers present, both sha256 source hashes referenced twice each).\n- Published `report.md`.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2\",\"verdict\":\"PASS\"}]}\n```",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c1_wu_integrate",
       "work_type": "INTEGRATE",
-      "artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+      "artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
     },
     {
-      "run_id": "run_e604e065807347d7",
+      "run_id": "run_134bdbb12f3e4726",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde",
+            "artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+          "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
         "outcome": "COMPLETED",
         "published_paths": [
-          "report.md"
+          "m2_c1_wu_integrate.md"
         ],
-        "summary": "Verification complete.\n\n**Findings:**\n- `report.md` now exists at the exact deliverable path named in the plan (`m2_c1_wu_integrate` expected output) and the objective.\n- Content integrity: `sha256 = b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde` (2159 bytes) \u2014 byte-identical to the harness-delivered upstream integrated artifact (`m2_c1_wu_integrate.md`) and to the dependency result `res_db9af812caea4069` hash expected on the `VERDICT_PASS` edge.\n- Structure met: contains `## Sources` table, `## Part 1 \u2014 Left Summary` (with left source + scope note), `## Part 2 \u2014 Right Summary` (with key points), and `## Combined Findings`; references both `attachments/left.txt` and `attachments/right.txt`.\n- Artifact published successfully.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde\",\"verdict\":\"PASS\"}]}\n```",
+        "summary": "Verification complete.\n\n**Findings**\n- The integrated report deliverable exists in the workspace per the harness naming convention (prerequisite work-unit files appear as `<work_unit_id>.<ext>`), so the INTEGRATE output `report.md` is present as `m2_c1_wu_integrate.md`.\n- Content hash `a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2` matches the plan edge artifact hash and the upstream `dependency_result`, so the verified artifact is the exact integrated deliverable.\n- Structure is valid: title, `## Left Attachment Summary`, `## Right Attachment Summary`, `## Combined Overview`, and a `## Sources` table.\n- Accuracy confirmed against sources: `attachments/left.txt` (45 B, sha256 `961d89\u202637213`) and `attachments/right.txt` (46 B, sha256 `6f22fb\u20267ebc27`) match the summary text and the hashes recorded in the report's Sources table.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
-      "work_unit_id": "wu_08cca55afc4c4edb",
+      "work_unit_id": "wu_243f49557e0b4f93",
       "work_type": "VERIFY",
-      "artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+      "artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
     }
   ],
   "publish_hashes": [
-    "cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5",
-    "914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590",
-    "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde",
-    "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+    "9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb",
+    "3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d",
+    "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2",
+    "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
   ],
   "terminal": "COMPLETED",
   "ok": true,
@@ -184,45 +184,45 @@
       "from": "m2_c1_wu_left",
       "to": "m2_c1_wu_integrate",
       "file": "m2_c1_wu_left.md",
-      "artifact_hash": "cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5",
-      "bytes": 571
+      "artifact_hash": "9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb",
+      "bytes": 623
     },
     {
       "from": "m2_c1_wu_right",
       "to": "m2_c1_wu_integrate",
       "file": "m2_c1_wu_right.md",
-      "artifact_hash": "914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590",
-      "bytes": 616
+      "artifact_hash": "3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d",
+      "bytes": 577
     },
     {
       "from": "m2_c1_wu_integrate",
-      "to": "wu_08cca55afc4c4edb",
+      "to": "wu_243f49557e0b4f93",
       "file": "m2_c1_wu_integrate.md",
-      "artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde",
-      "bytes": 2159
+      "artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2",
+      "bytes": 2011
     }
   ],
-  "integrate_artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde",
+  "integrate_artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2",
   "verify_revision": {
     "ok": true,
     "error": null,
     "plan_version": 2,
     "node_count": 4,
     "new_verify_work_units": [
-      "wu_08cca55afc4c4edb"
+      "wu_243f49557e0b4f93"
     ],
-    "pinned_artifact_hash": "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+    "pinned_artifact_hash": "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
   },
   "failures": [],
   "done_work_units": [
     "m2_c1_wu_left",
     "m2_c1_wu_right",
     "m2_c1_wu_integrate",
-    "wu_08cca55afc4c4edb"
+    "wu_243f49557e0b4f93"
   ],
   "missing_work_units": [],
   "verify_pass_work_units": [
-    "wu_08cca55afc4c4edb"
+    "wu_243f49557e0b4f93"
   ],
   "artifact_count": 3,
   "unbacked_artifacts": [],
@@ -230,12 +230,12 @@
   "artifact_binding_ok": true,
   "artifact_binding": {
     "pinned": [
-      "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde"
+      "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
     ],
     "delivered": [
-      "914b542dae2b446ccd4ee64af5c9c550501a65e3b2a2c0de54c849a1e9021590",
-      "b64ed5faf0fae6e9aeb7ec489aee4b5536817e1e728baca0508229a9c1a9bbde",
-      "cac9c8b52de879fbe0932ae6d52a4bf4ca02541d0d93850c3438865a9354a3c5"
+      "3ca1e5ff80de4c5cf5e60f62fbab5022b7d88ed1dba4402f12a381bb6933104d",
+      "9aa63667a0123a524f554da07a37d60c3e43c64b4a3e5063b49acae08f92fefb",
+      "a93607dac7b06aee110d0ce332079910c49a3e5184798c4ed225823e3c45d0a2"
     ]
   },
   "unconfirmed_runs": [],

@@ -40,6 +40,9 @@ uv run --no-sync python -m hibiki.interfaces.m2_runner --live --clean \
 - **Dependency delivery works**: upstream deliverables are staged into each dependent
   Workspace (INTEGRATE reads `<work_unit_id>.<ext>`; VERIFY reads `delivered/`), which is
   what lets an INTEGRATE unit actually merge its prerequisites.
+- **The Fake gate exercises a content-changing Repair**: the REPAIR unit publishes
+  different bytes, the re-verify revision is pinned to the *repaired* digest, and the new
+  VERIFY passes at plan v3 (`verify_revision.pinned_artifact_hash == repair digest`).
 - **The failure/revision path is exercised elsewhere in this session**: a real VERIFY FAIL
   produced Plan **v2** with a new REPAIR + VERIFY pinned to the digest under verification.
   In *this* run the model verified PASS first time, so `inject_triggered` is false and no
@@ -60,7 +63,7 @@ uv run --no-sync python -m hibiki.interfaces.m2_runner --live --clean \
 
 ## Verification at this tree
 
-- `pytest-full.log` / `junit-full.xml`: **323 passed, 0 skipped** (Docker up, so the
+- `pytest-full.log` / `junit-full.xml`: **324 passed, 0 skipped** (Docker up, so the
   sandbox suite runs instead of skipping).
 - `uv run ruff check .`: clean.
 - `source-files.sha256` pins the tree that produced this evidence.

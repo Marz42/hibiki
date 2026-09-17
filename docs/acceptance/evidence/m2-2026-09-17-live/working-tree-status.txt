@@ -1,4 +1,6 @@
  M docs/M2-KNOWN-GAPS.md
+ M docs/acceptance/M2-2026-09-17.md
+ M docs/acceptance/evidence/m2-2026-09-17-live/README.md
  M docs/acceptance/evidence/m2-2026-09-17-live/environment.txt
  M docs/acceptance/evidence/m2-2026-09-17-live/junit-full.xml
  M docs/acceptance/evidence/m2-2026-09-17-live/live-runs.log
@@ -9,7 +11,5 @@
  M docs/acceptance/evidence/m2-2026-09-17-live/source-files.sha256
  M docs/acceptance/evidence/m2-2026-09-17-live/summary.json
  M docs/acceptance/evidence/m2-2026-09-17-live/working-tree-status.txt
- M src/hibiki/application/service.py
- M src/hibiki/domain/plan.py
  M src/hibiki/interfaces/m2_runner.py
  M tests/m2/test_second_review_regressions.py

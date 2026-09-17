@@ -1,8 +1,10 @@
-date_utc: 2026-09-17T15:26:31Z
-git_head: afdbcbca460fa6d3f2e3d4136de4fa1449687533
+date_utc: 2026-09-17T15:49:22Z
+git_head: aabe210ddc2cd9d3dc2b7eedc161921168b94f9d
 python: Python 3.12.12
 docker_server: 28.5.1
 sandbox_image: hibiki-sandbox:py312
 provider_model: deepseek-flash
 provider_base_url: https://api.deepseek.com
 gate: >=2 of 3 tasks COMPLETED (spec line 915) — result 3/3, exit 0
+note: in this run the injected FAIL did not fire (model verified PASS first time);
+      the FAIL->REPAIR->re-verify path is covered deterministically by the Fake gate

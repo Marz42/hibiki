@@ -8,9 +8,9 @@ INFO  [alembic.runtime.migration] Running upgrade 0004_evidence_sequence -> 0005
 INFO  [alembic.runtime.migration] Running upgrade 0005_m1_execution -> 0006_artifact_uri, artifact content reference
 INFO  [alembic.runtime.migration] Running upgrade 0006_artifact_uri -> 0007_sandbox_identity, Persist Run ↔ sandbox container identity for stop/reconcile confirmation.
 INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_m2_messages, M2: append-only task message log for Planner cursors.
-[PASS] m2-c1 runs=4 artifacts=3 -> /tmp/hibiki-live13-out/m2-c1.json
-[PASS] m2-c2 runs=4 artifacts=4 -> /tmp/hibiki-live13-out/m2-c2.json
-[PASS] m2-c3 runs=4 artifacts=4 -> /tmp/hibiki-live13-out/m2-c3.json
+[PASS] m2-c1 runs=4 artifacts=3 -> /tmp/hibiki-live15-out/m2-c1.json
+[PASS] m2-c2 runs=4 artifacts=4 -> /tmp/hibiki-live15-out/m2-c2.json
+[PASS] m2-c3 runs=4 artifacts=4 -> /tmp/hibiki-live15-out/m2-c3.json
 {
   "mode": "live",
   "model": "deepseek-flash",
@@ -19,7 +19,7 @@ INFO  [alembic.runtime.migration] Running upgrade 0007_sandbox_identity -> 0008_
   "completed": 3,
   "failed": 0,
   "ok": true,
-  "at": "2026-09-17T15:24:48.564607+00:00",
+  "at": "2026-09-17T15:49:11.377285+00:00",
   "records": [
     {
       "task_def": "m2-c1",

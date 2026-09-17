@@ -1,6 +1,6 @@
 {
   "task_def": "m2-c2",
-  "task_id": "task_a012356476af41aa",
+  "task_id": "task_113029efde484502",
   "plan_version": 2,
   "workspaces": [
     "ws_m2_c2_wu_edit_a",
@@ -10,19 +10,19 @@
   ],
   "runs": [
     {
-      "run_id": "run_21bf6dbeab774f88",
+      "run_id": "run_0b18468f1d884c00",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22",
+            "artifact_hash": "070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22"
+          "070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -30,27 +30,27 @@
         "published_paths": [
           "edits/a.md"
         ],
-        "summary": "Unit complete: read `attachments/a.txt` (sha256 37217439\u2026), wrote `edits/a.md` containing one short sentence about alpha, and published it (artifact hash d281d312\u2026).\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22\",\"verdict\":\"PASS\"}]}",
+        "summary": "Read `attachments/a.txt` (alpha sample content), wrote a one-sentence deliverable to `edits/a.md`, and published it. Later units' work (b.md, integration, verify steps) was intentionally not performed.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c2_wu_edit_a",
       "work_type": "EXECUTE",
-      "artifact_hash": "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22"
+      "artifact_hash": "070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839"
     },
     {
-      "run_id": "run_3a6cc59aaec04703",
+      "run_id": "run_2e0c1a97a0a1469f",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34",
+            "artifact_hash": "395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34"
+          "395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -58,27 +58,27 @@
         "published_paths": [
           "edits/b.md"
         ],
-        "summary": "Done: read `attachments/b.txt` (\"beta sample content\"), wrote `edits/b.md` with one short sentence about beta, and published it. No later-unit work performed.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34\",\"verdict\":\"PASS\"}]}",
+        "summary": "Completed this unit only: read `attachments/b.txt`, wrote `edits/b.md` (one short sentence about beta), and published it. No later units' work performed.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c2_wu_edit_b",
       "work_type": "EXECUTE",
-      "artifact_hash": "39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34"
+      "artifact_hash": "395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71"
     },
     {
-      "run_id": "run_4c19305022ef4b49",
+      "run_id": "run_fa324d44153f4e77",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9",
+            "artifact_hash": "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9"
+          "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -86,27 +86,27 @@
         "published_paths": [
           "catalog.md"
         ],
-        "summary": "Deliverable integrated and published. Summary:\n\n- Read prerequisite deliverables `m2_c2_wu_edit_a.md` (alpha) and `m2_c2_wu_edit_b.md` (beta) staged at workspace top level.\n- Merged both into `catalog.md` listing both alpha and beta.\n- Published `catalog.md` (sha256 `37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9`).\n- Did not perform the verify step, per the objective (verify is a downstream unit).\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9\",\"verdict\":\"PASS\"}]}",
+        "summary": "catalog.md has been merged and published successfully.\n\nSummary:\n- Read prerequisite deliverables staged at the workspace top level: `m2_c2_wu_edit_a.md` (alpha content) and `m2_c2_wu_edit_b.md` (beta content).\n- Merged both into `catalog.md`, listing both alpha and beta.\n- Published `catalog.md`.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b\",\"verdict\":\"PASS\"}]}\n```",
         "verdict": "PASS"
       },
       "work_unit_id": "m2_c2_wu_integrate",
       "work_type": "INTEGRATE",
-      "artifact_hash": "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9"
+      "artifact_hash": "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b"
     },
     {
-      "run_id": "run_b44bdb99a5434c60",
+      "run_id": "run_4d467bcc483c426b",
       "status": "SUCCEEDED",
       "result": {
         "acceptance_evidence": [
           {
-            "artifact_hash": "88f9ca142cd1c2de4e450e434dfd4d60c8b84f0c81b21de5fbe05397b28eb137",
+            "artifact_hash": "12e78b75de7f3738aad83aeaadec5a55a53e2739ca9eab6cebb9c9bd642e13b0",
             "check": null,
             "criterion_id": "c1",
             "verdict": "PASS"
           }
         ],
         "artifact_refs": [
-          "88f9ca142cd1c2de4e450e434dfd4d60c8b84f0c81b21de5fbe05397b28eb137"
+          "12e78b75de7f3738aad83aeaadec5a55a53e2739ca9eab6cebb9c9bd642e13b0"
         ],
         "blocked_marker_asserted": false,
         "marker": null,
@@ -114,19 +114,19 @@
         "published_paths": [
           "verify.md"
         ],
-        "summary": "The integrated deliverable from the upstream INTEGRATE unit (`m2_c2_wu_integrate`) is staged at the workspace top level as `m2_c2_wu_integrate.md` (per the README staging convention; no `delivered/` directory was created). Its content mentions both **alpha** and **beta**, so the verification verdict is PASS. I wrote and published `verify.md` and did not modify any other unit's deliverable.\n\n```json\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"88f9ca142cd1c2de4e450e434dfd4d60c8b84f0c81b21de5fbe05397b28eb137\",\"verdict\":\"PASS\"}]}\n```",
+        "summary": "Verified against the staged integrated deliverable.\n\n- Read the staged file (present at workspace root as `m2_c2_wu_integrate.md`, i.e. the integrate unit's output); it exists and mentions both **alpha** and **beta**.\n- Wrote and published `verify.md` with an explicit **PASS** verdict.\n\n{\"outcome\":\"COMPLETED\",\"verdict\":\"PASS\",\"acceptance_evidence\":[{\"criterion_id\":\"c1\",\"artifact_hash\":\"12e78b75de7f3738aad83aeaadec5a55a53e2739ca9eab6cebb9c9bd642e13b0\",\"verdict\":\"PASS\"}]}",
         "verdict": "PASS"
       },
-      "work_unit_id": "wu_3db196f6b82f46d6",
+      "work_unit_id": "wu_3ee64660f09241cf",
       "work_type": "VERIFY",
-      "artifact_hash": "88f9ca142cd1c2de4e450e434dfd4d60c8b84f0c81b21de5fbe05397b28eb137"
+      "artifact_hash": "12e78b75de7f3738aad83aeaadec5a55a53e2739ca9eab6cebb9c9bd642e13b0"
     }
   ],
   "publish_hashes": [
-    "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22",
-    "39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34",
-    "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9",
-    "88f9ca142cd1c2de4e450e434dfd4d60c8b84f0c81b21de5fbe05397b28eb137"
+    "070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839",
+    "395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71",
+    "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b",
+    "12e78b75de7f3738aad83aeaadec5a55a53e2739ca9eab6cebb9c9bd642e13b0"
   ],
   "terminal": "COMPLETED",
   "ok": true,
@@ -187,34 +187,34 @@
       "from": "m2_c2_wu_edit_a",
       "to": "m2_c2_wu_integrate",
       "file": "m2_c2_wu_edit_a.md",
-      "artifact_hash": "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22",
-      "bytes": 49
+      "artifact_hash": "070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839",
+      "bytes": 41
     },
     {
       "from": "m2_c2_wu_edit_b",
       "to": "m2_c2_wu_integrate",
       "file": "m2_c2_wu_edit_b.md",
-      "artifact_hash": "39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34",
-      "bytes": 49
+      "artifact_hash": "395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71",
+      "bytes": 102
     },
     {
       "from": "m2_c2_wu_integrate",
-      "to": "wu_3db196f6b82f46d6",
+      "to": "wu_3ee64660f09241cf",
       "file": "m2_c2_wu_integrate.md",
-      "artifact_hash": "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9",
-      "bytes": 126
+      "artifact_hash": "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b",
+      "bytes": 171
     }
   ],
-  "integrate_artifact_hash": "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9",
+  "integrate_artifact_hash": "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b",
   "verify_revision": {
     "ok": true,
     "error": null,
     "plan_version": 2,
     "node_count": 4,
     "new_verify_work_units": [
-      "wu_3db196f6b82f46d6"
+      "wu_3ee64660f09241cf"
     ],
-    "pinned_artifact_hash": "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9"
+    "pinned_artifact_hash": "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b"
   },
   "inject_triggered": false,
   "notes": [
@@ -225,11 +225,11 @@
     "m2_c2_wu_edit_a",
     "m2_c2_wu_edit_b",
     "m2_c2_wu_integrate",
-    "wu_3db196f6b82f46d6"
+    "wu_3ee64660f09241cf"
   ],
   "missing_work_units": [],
   "verify_pass_work_units": [
-    "wu_3db196f6b82f46d6"
+    "wu_3ee64660f09241cf"
   ],
   "artifact_count": 4,
   "unbacked_artifacts": [],
@@ -237,13 +237,13 @@
   "artifact_binding_ok": true,
   "artifact_binding": {
     "pinned": [
-      "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9"
+      "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b"
     ],
     "delivered": [
-      "37d0d82b88b7d6e838675762c9a38c3475ce6e5e1256c85b4be11a9a177ab8c9",
-      "39e6d9d6672cf586aec127e92fc4175489fcd0e3beed2d31dac699c359200d34",
-      "88f9ca142cd1c2de4e450e434dfd4d60c8b84f0c81b21de5fbe05397b28eb137",
-      "d281d3126140920f724c0007424d085a0860321c712cd2cc6b16d23c79d7ab22"
+      "070dfbe11f7f5d729044503f6a0ed5cf453c53d556444340fb8906a65abe9839",
+      "12e78b75de7f3738aad83aeaadec5a55a53e2739ca9eab6cebb9c9bd642e13b0",
+      "13c052750d07817909a7dba852c082bddb3136d720d09d91caca717dbdc1ab2b",
+      "395db9ad12060810407700d001c43122c9df19a5de211804f188402ea9edca71"
     ]
   },
   "unconfirmed_runs": [],
