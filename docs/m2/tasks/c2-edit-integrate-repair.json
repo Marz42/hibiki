@@ -8,7 +8,7 @@
         "work_unit_id": "wu_edit_a",
         "work_type": "EXECUTE",
         "spec_version": 1,
-        "objective": "Only write edits/a.md with one short sentence about alpha. Do not edit beta or catalog.",
+        "objective": "This unit only: read attachments/a.txt, write edits/a.md with one short sentence about alpha, then publish edits/a.md. Do not perform later units' work.",
         "input_refs": ["attachments/a.txt"],
         "expected_outputs": ["edits/a.md"]
       },
@@ -16,7 +16,7 @@
         "work_unit_id": "wu_edit_b",
         "work_type": "EXECUTE",
         "spec_version": 1,
-        "objective": "Only write edits/b.md with one short sentence about beta. Do not edit alpha or catalog.",
+        "objective": "This unit only: read attachments/b.txt, write edits/b.md with one short sentence about beta, then publish edits/b.md. Do not perform later units' work.",
         "input_refs": ["attachments/b.txt"],
         "expected_outputs": ["edits/b.md"]
       },
@@ -24,14 +24,15 @@
         "work_unit_id": "wu_integrate",
         "work_type": "INTEGRATE",
         "spec_version": 1,
-        "objective": "Merge edits/a.md and edits/b.md into catalog.md and publish it.",
+        "objective": "This unit only: merge the deliverables staged by the prerequisite units (<work_unit_id>.md at the workspace top level) into catalog.md listing both alpha and beta, then publish catalog.md. Do not perform the verify step.",
         "expected_outputs": ["catalog.md"]
       },
       {
         "work_unit_id": "wu_verify",
         "work_type": "VERIFY",
         "spec_version": 1,
-        "objective": "Confirm catalog.md exists; emit an explicit COMPLETED+PASS or COMPLETED+FAIL verdict."
+        "objective": "This unit only: the integrated deliverable is staged at delivered/<integrate_work_unit_id>.md. Read that exact file, write verify.md with an explicit PASS or FAIL verdict (FAIL if it is absent or does not mention both alpha and beta), then publish verify.md. Do not rewrite another unit's deliverable.",
+        "expected_outputs": ["verify.md"]
       }
     ],
     "edges": [

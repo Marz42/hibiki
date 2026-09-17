@@ -1,13 +1,39 @@
 {
   "task_id": "m2-c3",
   "title": "Convert two formats then integrate catalog",
-  "objective": "Conv1: copy attachments/a.txt to out/a.upper.txt in uppercase and publish. Conv2: copy attachments/b.txt to out/b.upper.txt in uppercase and publish. Integrate: write catalog.md listing both outputs and publish. Verify: write verify.md saying PASS and publish. Keep tool use minimal; do not explore outside attachments/ and out/.",
+  "objective": "A four-unit pipeline over two attachments; each unit performs only its own part.",
   "topology": {
     "nodes": [
-      {"work_unit_id": "wu_conv1", "work_type": "EXECUTE", "spec_version": 1},
-      {"work_unit_id": "wu_conv2", "work_type": "EXECUTE", "spec_version": 1},
-      {"work_unit_id": "wu_integrate", "work_type": "INTEGRATE", "spec_version": 1},
-      {"work_unit_id": "wu_verify", "work_type": "VERIFY", "spec_version": 1}
+      {
+        "work_unit_id": "wu_conv1",
+        "work_type": "EXECUTE",
+        "spec_version": 1,
+        "objective": "This unit only: read attachments/a.txt, write its contents uppercased to out/a.upper.txt, then publish out/a.upper.txt. Do not perform later units' work.",
+        "input_refs": ["attachments/a.txt"],
+        "expected_outputs": ["out/a.upper.txt"]
+      },
+      {
+        "work_unit_id": "wu_conv2",
+        "work_type": "EXECUTE",
+        "spec_version": 1,
+        "objective": "This unit only: read attachments/b.txt, write its contents uppercased to out/b.upper.txt, then publish out/b.upper.txt. Do not perform later units' work.",
+        "input_refs": ["attachments/b.txt"],
+        "expected_outputs": ["out/b.upper.txt"]
+      },
+      {
+        "work_unit_id": "wu_integrate",
+        "work_type": "INTEGRATE",
+        "spec_version": 1,
+        "objective": "This unit only: write catalog.md listing the two uppercase files delivered by the prerequisite units, then publish catalog.md. Prerequisite deliverables are staged at the workspace top level as <work_unit_id>.txt. Do not perform the verify step.",
+        "expected_outputs": ["catalog.md"]
+      },
+      {
+        "work_unit_id": "wu_verify",
+        "work_type": "VERIFY",
+        "spec_version": 1,
+        "objective": "This unit only: inspect the delivered catalog artifact staged under delivered/, write verify.md with an explicit PASS or FAIL verdict, then publish verify.md. Do not rewrite another unit's deliverable.",
+        "expected_outputs": ["verify.md"]
+      }
     ],
     "edges": [
       {"from_work_unit_id": "wu_conv1", "to_work_unit_id": "wu_integrate", "predicate": "DONE"},
